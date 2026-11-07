@@ -1,0 +1,16 @@
+{
+  "name": "@solemn/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@solemn/shared": "workspace:*",
+    "@solemn/database": "workspace:*",
+    "dotenv": "17.4.2",
+    "pino": "10.4.0",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "solemn",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Solemn — Automated Solana Meme Coin Trading System (paper-only foundation)",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.13.0 <23",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "dev": "pnpm build && tsx watch apps/worker/src/index.ts",
+    "start": "node apps/worker/dist/index.js",
+    "build": "tsc -b",
+    "typecheck": "pnpm build && tsc -p tsconfig.check.json --noEmit",
+    "test": "pnpm build && vitest run --project unit",
+    "test:integration": "pnpm build && vitest run --project integration",
+    "lint": "eslint . --max-warnings 0 && prettier --check .",
+    "format": "prettier --write .",
+    "db:generate": "pnpm build && pnpm --filter @solemn/database db:generate",
+    "db:migrate": "pnpm build && pnpm --filter @solemn/database db:migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
+    "eslint": "10.14.0",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.1.0"
+  }
+}

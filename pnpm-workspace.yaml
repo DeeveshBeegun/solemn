@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+onlyBuiltDependencies:
+  - esbuild
+overrides:
+  # Temporary security fixes until the upstream tooling updates these ranges.
+  'minimatch@>=7 <11.0.1': 11.0.1
+  '@esbuild-kit/core-utils>esbuild': 0.25.12

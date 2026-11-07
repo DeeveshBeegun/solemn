@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "composite": false, "declaration": false },
+  "include": [
+    "tests/**/*.ts",
+    "apps/*/tests/**/*.ts",
+    "packages/*/tests/**/*.ts",
+    "vitest.config.ts",
+    "packages/database/drizzle.config.ts"
+  ]
+}

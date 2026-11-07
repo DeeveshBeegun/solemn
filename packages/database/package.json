@@ -1,0 +1,23 @@
+{
+  "name": "@solemn/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node dist/migrate.js"
+  },
+  "dependencies": {
+    "@solemn/shared": "workspace:*",
+    "dotenv": "17.4.2",
+    "drizzle-orm": "0.45.4",
+    "pg": "8.23.1"
+  }
+}
