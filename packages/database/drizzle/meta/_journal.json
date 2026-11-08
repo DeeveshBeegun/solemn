@@ -8,6 +8,41 @@
       "when": 1794052709900,
       "tag": "0000_solemn_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794070004762,
+      "tag": "0001_week2_discovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794071104477,
+      "tag": "0002_event_ingestion_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794119159625,
+      "tag": "0003_token_risk_analysis",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794119465373,
+      "tag": "0004_risk_freshness_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794122940500,
+      "tag": "0005_momentum_strategy",
+      "breakpoints": true
     }
   ]
 }

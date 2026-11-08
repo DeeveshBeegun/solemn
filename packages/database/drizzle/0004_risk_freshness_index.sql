@@ -1,0 +1,1 @@
+CREATE INDEX "tokens_risk_eligibility_idx" ON "tokens" USING btree ("risk_status","risk_valid_until");

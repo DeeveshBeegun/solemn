@@ -1,0 +1,1 @@
+CREATE INDEX "market_events_source_ingestion_idx" ON "market_events" USING btree ("source","ingested_at");

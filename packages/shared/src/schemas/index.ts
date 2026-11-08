@@ -61,14 +61,20 @@ export const orderStatusSchema = z.enum([
 
 export const tokenSchema = z.strictObject({
   mintAddress: mintAddressSchema,
-  name: label,
-  symbol: z.string().trim().min(1).max(32),
-  decimals: z.number().int().min(0).max(255),
-  createdAt: timestampSchema,
+  name: label.nullable(),
+  symbol: z.string().trim().min(1).max(256).nullable(),
+  decimals: z.number().int().min(0).max(255).nullable(),
+  createdAt: timestampSchema.nullable(),
   discoveredAt: timestampSchema,
   sourcePlatform: label,
   poolAddress: mintAddressSchema.nullable(),
   riskStatus: riskStatusSchema,
+  creatorAddress: mintAddressSchema.nullable().default(null),
+  bondingCurveAddress: mintAddressSchema.nullable().default(null),
+  migrationStatus: z.enum(['UNKNOWN', 'MIGRATED']).default('UNKNOWN'),
+  migratedAt: timestampSchema.nullable().default(null),
+  migrationObservedAt: timestampSchema.nullable().default(null),
+  migrationVenue: label.nullable().default(null),
 });
 
 export const marketEventSchema = z.strictObject({
@@ -87,10 +93,11 @@ export const marketEventSchema = z.strictObject({
     )
     .nullable(),
   transactionSignature: signatureSchema.nullable(),
-  eventAt: timestampSchema,
+  eventAt: timestampSchema.nullable(),
   ingestedAt: timestampSchema,
   source: label,
   rawPayload: z.record(z.string(), z.json()),
+  rawMessage: z.string().nullable().default(null),
 });
 
 export const marketSnapshotSchema = z.strictObject({

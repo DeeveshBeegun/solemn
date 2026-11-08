@@ -1,8 +1,15 @@
 import { config as loadDotEnv } from 'dotenv';
-import { createDatabase } from '@solemn/database';
+import {
+  createDatabase,
+  createScannerRepository,
+  createRiskRepository,
+} from '@solemn/database';
 import { loadConfig } from './config/index.js';
 import { createLogger, safeError } from './services/logger.js';
 import { createWorker } from './services/worker.js';
+import { createScannerService } from './scanner/scannerService.js';
+import { createRiskAnalysisService } from './analysis/riskAnalysisService.js';
+import { createStrategyService } from './strategy/strategyService.js';
 
 loadDotEnv({ quiet: true });
 const bootstrapLogger = createLogger('info');
@@ -24,14 +31,53 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     void stop();
   });
-  const worker = createWorker(config, database, logger);
+  const risk = config.TOKEN_RISK_ANALYSIS_ENABLED
+    ? createRiskAnalysisService(
+        config,
+        createRiskRepository(database.db),
+        logger,
+      )
+    : undefined;
+  const scanner = config.SCANNER_ENABLED
+    ? createScannerService(
+        config,
+        createScannerRepository(database.db, {
+          requestRiskAnalysis: config.TOKEN_RISK_ANALYSIS_ENABLED,
+        }),
+        logger,
+        undefined,
+        (event) =>
+          risk?.notify(
+            event.event.tokenMint,
+            event.event.eventType === 'TOKEN_MIGRATED',
+          ),
+      )
+    : undefined;
+  const strategy = config.STRATEGY_ENABLED
+    ? createStrategyService(config, database.db, logger)
+    : undefined;
+  const worker = createWorker(
+    config,
+    database,
+    logger,
+    scanner,
+    risk,
+    strategy,
+  );
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
-      const deadline = setTimeout(() => {
-        logger.fatal('Solemn shutdown exceeded 10 seconds');
-        process.exit(1);
-      }, 10_000);
+      const deadline = setTimeout(
+        () => {
+          logger.fatal(
+            'Solemn shutdown deadline exceeded; accepted scanner events may be lost',
+          );
+          process.exit(1);
+        },
+        config.SCANNER_DRAIN_TIMEOUT_MS +
+          config.RISK_SHUTDOWN_TIMEOUT_MS +
+          15_000,
+      );
       try {
         await worker.stop();
       } catch (error) {

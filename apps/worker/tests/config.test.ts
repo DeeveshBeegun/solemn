@@ -7,6 +7,47 @@ const environment = {
 };
 
 describe('configuration', () => {
+  it('defaults risk networking off, protects rate budgets, and validates research amounts', () => {
+    expect(loadConfig(environment).TOKEN_RISK_ANALYSIS_ENABLED).toBe(false);
+    expect(() =>
+      loadConfig({ ...environment, JUPITER_REQUEST_INTERVAL_MS: '10' }),
+    ).toThrow('JUPITER_REQUEST_INTERVAL_MS');
+    expect(() =>
+      loadConfig({ ...environment, RISK_MAX_TOP_HOLDERS_PERCENTAGE: '101' }),
+    ).toThrow('RISK_MAX_TOP_HOLDERS_PERCENTAGE');
+    expect(() =>
+      loadConfig({ ...environment, RISK_MIN_LIQUIDITY_USD: '1e4' }),
+    ).toThrow('RISK_MIN_LIQUIDITY_USD');
+    expect(() =>
+      loadConfig({ ...environment, JUPITER_CACHE_TTL_MS: '61000' }),
+    ).toThrow('JUPITER_CACHE_TTL_MS');
+  });
+  it('defaults to offline discovery and validates scanner settings', () => {
+    expect(loadConfig(environment).SCANNER_ENABLED).toBe(false);
+    expect(() =>
+      loadConfig({ ...environment, SCANNER_QUEUE_CAPACITY: '-1' }),
+    ).toThrow('SCANNER_QUEUE_CAPACITY');
+    expect(() =>
+      loadConfig({ ...environment, SCANNER_ENABLED: 'yes' }),
+    ).toThrow('SCANNER_ENABLED');
+    expect(() =>
+      loadConfig({ ...environment, SCANNER_RECONNECT_MAX_MS: '10' }),
+    ).toThrow('SCANNER_RECONNECT_MAX_MS');
+    expect(() =>
+      loadConfig({
+        ...environment,
+        SCANNER_ENABLED: 'true',
+        SCANNER_SUBSCRIBE_NEW_TOKENS: 'false',
+        SCANNER_SUBSCRIBE_MIGRATIONS: 'false',
+      }),
+    ).toThrow('SCANNER_ENABLED');
+    expect(() =>
+      loadConfig({
+        ...environment,
+        PUMPPORTAL_WS_URL: 'wss://pumpportal.fun/api/trade?api-key=SECRET',
+      }),
+    ).toThrow('PUMPPORTAL_WS_URL');
+  });
   it('defaults to PAPER and $100 without wallet credentials', () => {
     const config = loadConfig(environment);
     expect(config.TRADING_MODE).toBe('PAPER');

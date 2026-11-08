@@ -24,6 +24,12 @@ export const token: Token = {
   sourcePlatform: 'fixture',
   poolAddress: null,
   riskStatus: 'UNKNOWN',
+  creatorAddress: null,
+  bondingCurveAddress: null,
+  migrationStatus: 'UNKNOWN',
+  migratedAt: null,
+  migrationObservedAt: null,
+  migrationVenue: null,
 };
 export const event: MarketEvent = {
   id: id(1),
@@ -36,6 +42,7 @@ export const event: MarketEvent = {
   ingestedAt: LATER,
   source: 'fixture',
   rawPayload: { amount: '0.000000001', logs: ['created'] },
+  rawMessage: null,
 };
 export const snapshot: MarketSnapshot = {
   id: id(2),

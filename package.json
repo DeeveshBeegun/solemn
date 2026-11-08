@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Solemn — Automated Solana Meme Coin Trading System (paper-only foundation)",
+  "description": "Solemn \u2014 Automated Solana Meme Coin Trading System (paper-only foundation)",
   "packageManager": "pnpm@10.34.9",
   "engines": {
     "node": ">=22.13.0 <23",
@@ -12,6 +12,8 @@
   "scripts": {
     "dev": "pnpm build && tsx watch apps/worker/src/index.ts",
     "start": "node apps/worker/dist/index.js",
+    "scanner:smoke": "pnpm build && node apps/worker/dist/scanner/smoke.js",
+    "risk:assess": "pnpm build && node apps/worker/dist/analysis/assess.js",
     "build": "tsc -b",
     "typecheck": "pnpm build && tsc -p tsconfig.check.json --noEmit",
     "test": "pnpm build && vitest run --project unit",
@@ -19,7 +21,8 @@
     "lint": "eslint . --max-warnings 0 && prettier --check .",
     "format": "prettier --write .",
     "db:generate": "pnpm build && pnpm --filter @solemn/database db:generate",
-    "db:migrate": "pnpm build && pnpm --filter @solemn/database db:migrate"
+    "db:migrate": "pnpm build && pnpm --filter @solemn/database db:migrate",
+    "strategy:replay": "pnpm build && node apps/worker/dist/strategy/replayCli.js"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

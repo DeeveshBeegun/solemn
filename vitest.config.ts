@@ -16,7 +16,10 @@ export default defineConfig({
       {
         test: {
           name: 'integration',
-          include: ['packages/database/tests/**/*.integration.test.ts'],
+          include: [
+            'packages/database/tests/**/*.integration.test.ts',
+            'apps/worker/tests/**/*.integration.test.ts',
+          ],
           fileParallelism: false,
           testTimeout: 15000,
           hookTimeout: 30000,

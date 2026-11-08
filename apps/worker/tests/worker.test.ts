@@ -7,6 +7,63 @@ const config = loadConfig({ DATABASE_URL: 'postgresql://localhost/solemn' });
 const logger = pino({ level: 'silent' });
 
 describe('graceful service shutdown', () => {
+  it('stops discovery, risk analysis and database in order even when discovery drain fails', async () => {
+    const order: string[] = [];
+    const scanner = {
+      status: 'CONNECTED',
+      start: async () => undefined,
+      stop: async () => {
+        order.push('scanner');
+        throw new Error('scanner drain failed');
+      },
+    };
+    const risk = {
+      start: async () => undefined,
+      stop: async () => {
+        order.push('risk');
+      },
+    };
+    const worker = createWorker(
+      { ...config, SCANNER_ENABLED: true, TOKEN_RISK_ANALYSIS_ENABLED: true },
+      {
+        verify: async () => undefined,
+        close: async () => {
+          order.push('database');
+        },
+      },
+      logger,
+      scanner,
+      risk,
+    );
+    await worker.start();
+    await expect(worker.stop()).rejects.toThrow('scanner drain failed');
+    expect(order).toEqual(['scanner', 'risk', 'database']);
+  });
+  it('stops the scanner before closing the database, including scanner failure', async () => {
+    const order: string[] = [];
+    const scanner = {
+      status: 'CONNECTED',
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(async () => {
+        order.push('scanner');
+        throw new Error('drain failure');
+      }),
+    };
+    const worker = createWorker(
+      { ...config, SCANNER_ENABLED: true },
+      {
+        verify: async () => undefined,
+        close: async () => {
+          order.push('database');
+        },
+      },
+      logger,
+      scanner,
+    );
+    await worker.start();
+    await expect(worker.stop()).rejects.toThrow('drain failure');
+    expect(order).toEqual(['scanner', 'database']);
+  });
   it('starts once, closes once, and prevents restarting', async () => {
     const database = {
       verify: vi.fn().mockResolvedValue(undefined),
