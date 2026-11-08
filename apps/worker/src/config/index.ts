@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { percentageSchema, positiveDecimalSchema } from '@solemn/shared';
+import {
+  percentageSchema,
+  positiveDecimalSchema,
+  paperPolicySchema,
+} from '@solemn/shared';
 
 const booleanSetting = (fallback: string) =>
   z
@@ -111,6 +115,31 @@ export const configSchema = z
     RISK_RPC_REQUEST_INTERVAL_MS: integerSetting('1000', 1, 60000),
     RISK_JOB_LEASE_MS: integerSetting('300000', 1000, 3600000),
     RISK_SHUTDOWN_TIMEOUT_MS: integerSetting('15000', 10, 120000),
+    PAPER_TRADING_ENABLED: booleanSetting('false'),
+    PAPER_ALLOW_FIXTURE_SIGNALS: booleanSetting('false'),
+    PAPER_REPLAY_PATH: z.string().max(4096).default(''),
+    PAPER_PORTFOLIO_ID: z.union([z.uuid(), z.literal('')]).default(''),
+    PAPER_PORTFOLIO_NAME: z.string().min(1).max(100).default('week5-replay'),
+    PAPER_MAX_POSITION_PERCENT: positiveDecimalSchema.default('1.0'),
+    PAPER_MAX_OPEN_POSITIONS: integerSetting('3', 1, 100),
+    PAPER_STOP_LOSS_PERCENT: percentageSchema.default('25.0'),
+    PAPER_TAKE_PROFIT_1_PERCENT: positiveDecimalSchema.default('60.0'),
+    PAPER_TAKE_PROFIT_1_SELL_FRACTION: percentageSchema.default('33.3333'),
+    PAPER_TAKE_PROFIT_2_PERCENT: positiveDecimalSchema.default('150.0'),
+    PAPER_TAKE_PROFIT_2_SELL_FRACTION: percentageSchema.default('50.0'),
+    PAPER_TRAILING_STOP_PERCENT: percentageSchema.default('30.0'),
+    PAPER_MAX_HOLDING_MINUTES: integerSetting('60', 1, 1440),
+    PAPER_MAX_DAILY_LOSS_PERCENT: percentageSchema.default('3.0'),
+    PAPER_MAX_TOTAL_DRAWDOWN_PERCENT: percentageSchema.default('10.0'),
+    PAPER_BUY_FEE_PERCENT: percentageSchema.default('1.0'),
+    PAPER_SELL_FEE_PERCENT: percentageSchema.default('1.0'),
+    PAPER_BASELINE_SLIPPAGE_PERCENT: percentageSchema.default('1.0'),
+    PAPER_MAX_LIQUIDITY_PARTICIPATION_PERCENT: percentageSchema.default('1.0'),
+    PAPER_MIN_ORDER_USD: positiveDecimalSchema.default('0.01'),
+    PAPER_QUANTITY_DECIMALS: integerSetting('9', 0, 18),
+    PAPER_MAX_PRICE_AGE_SECONDS: integerSetting('15', 1, 300),
+    PAPER_MAX_SIGNAL_AGE_SECONDS: integerSetting('60', 1, 300),
+    PAPER_ENTRY_COOLDOWN_SECONDS: integerSetting('300', 0, 3600),
     STRATEGY_ENABLED: booleanSetting('false'),
     STRATEGY_ID: z
       .literal('SOLEMN_LAUNCH_MOMENTUM_V1')
@@ -146,6 +175,39 @@ export const configSchema = z
     MARKET_DATA_ALLOWED_LATENESS_MS: integerSetting('5000', 0, 30000),
   })
   .superRefine((config, context) => {
+    const paperValidation = paperPolicySchema.safeParse({
+      version: 'solemn-paper-v1',
+      initialBalanceUsd: config.INITIAL_PAPER_BALANCE_USD,
+      maxPositionPercent: config.PAPER_MAX_POSITION_PERCENT,
+      maxOpenPositions: config.PAPER_MAX_OPEN_POSITIONS,
+      stopLossPercent: config.PAPER_STOP_LOSS_PERCENT,
+      takeProfit1Percent: config.PAPER_TAKE_PROFIT_1_PERCENT,
+      takeProfit1Fraction: config.PAPER_TAKE_PROFIT_1_SELL_FRACTION,
+      takeProfit2Percent: config.PAPER_TAKE_PROFIT_2_PERCENT,
+      takeProfit2Fraction: config.PAPER_TAKE_PROFIT_2_SELL_FRACTION,
+      trailingStopPercent: config.PAPER_TRAILING_STOP_PERCENT,
+      maxHoldingMinutes: config.PAPER_MAX_HOLDING_MINUTES,
+      maxDailyLossPercent: config.PAPER_MAX_DAILY_LOSS_PERCENT,
+      maxTotalDrawdownPercent: config.PAPER_MAX_TOTAL_DRAWDOWN_PERCENT,
+      buyFeePercent: config.PAPER_BUY_FEE_PERCENT,
+      sellFeePercent: config.PAPER_SELL_FEE_PERCENT,
+      slippagePercent: config.PAPER_BASELINE_SLIPPAGE_PERCENT,
+      maxLiquidityParticipationPercent:
+        config.PAPER_MAX_LIQUIDITY_PARTICIPATION_PERCENT,
+      minimumOrderUsd: config.PAPER_MIN_ORDER_USD,
+      quantityDecimals: config.PAPER_QUANTITY_DECIMALS,
+      maxPriceAgeSeconds: config.PAPER_MAX_PRICE_AGE_SECONDS,
+      maxSignalAgeSeconds: config.PAPER_MAX_SIGNAL_AGE_SECONDS,
+      entryCooldownSeconds: config.PAPER_ENTRY_COOLDOWN_SECONDS,
+    });
+    if (!paperValidation.success)
+      context.addIssue({
+        code: 'custom',
+        path: ['PAPER_CONFIGURATION'],
+        message:
+          'Invalid paper policy; percentages must satisfy the documented bounds',
+      });
+
     const issue = (path: string, message: string) =>
       context.addIssue({ code: 'custom', path: [path], message });
     if (

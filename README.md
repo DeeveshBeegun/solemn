@@ -2,11 +2,11 @@
 
 Solemn is an automated Solana meme coin trading system designed to discover emerging tokens, analyze market activity, identify opportunities, manage risk, and eventually execute trades automatically.
 
-**Current status: Week 4 — Momentum Strategy and Signal Engine. PAPER ONLY.** Read-only discovery and risk screening are joined by a deterministic fixture/replay BUY-candidate engine. Live signals remain **NOT_READY** without individual trade data. Discovery, risk networking and background strategy processing default to disabled. No wallet, signing or automatic orders are implemented.
+**Current status: Week 6 — Historical Backtesting. PAPER ONLY.** Chronological replay reuses the momentum strategy and durable paper ledger, adds explicit execution latency, isolated backtest accounts, performance metrics and reports. Bundled datasets are synthetic; the operational real dataset is insufficient for a genuine historical strategy backtest. Live signals and forward paper trading remain **NOT_READY**. No wallets, signing, swaps or real-money orders exist.
 
 ## Vision and scope
 
-The longer-term roadmap includes token launch and migration monitoring, market and security analysis, momentum strategies, risk controls, backtesting, forward paper trading, execution-cost tracking, and a monitoring dashboard with emergency controls. Read-only discovery, enrichment, deterministic risk screening and research momentum replay are implemented. Live market-data integration, automatic execution and the dashboard remain future milestones.
+The longer-term roadmap includes token launch and migration monitoring, market and security analysis, momentum strategies, risk controls, backtesting, forward paper trading, execution-cost tracking, and a monitoring dashboard with emergency controls. Read-only discovery, enrichment, risk screening, momentum replay and durable automated paper trading are implemented. Live market-data integration, real-money execution and the dashboard remain future milestones.
 
 This repository provides a strict TypeScript monorepo, runtime validation, PostgreSQL schemas and migrations, structured logging, an execution interface, deterministic simulation fixtures, tests, and CI.
 
@@ -15,22 +15,27 @@ This repository provides a strict TypeScript monorepo, runtime validation, Postg
 ```text
 apps/worker             @solemn/worker
   config/               Zod environment validation; rejects live mode
-  execution/            ExecutionAdapter and in-memory PaperExecutionAdapter
+  execution/            Observation-driven PaperExecutor and legacy fixture adapter
   services/             Logging, lifecycle, graceful database shutdown
   scanner/              One WebSocket, normalization, bounded queue, persistence, gaps
   analysis/             Risk readers, replay market provider, candles and indicators
-  risk/                 Deterministic screening rules; no trading decisions
+  risk/                 Security/account risk gates and fee-aware position sizing
   strategy/             Breakout state machine, risk-gated signals, replay and worker service
+  portfolio/            Durable paper accounting, monitoring, staged exits and recovery
+  backtesting/          Availability-ordered replay, latency, analytics, audit and reports
 packages/shared         @solemn/shared
   types/ schemas/       Domain types inferred from Zod schemas
   financial.ts          Exact fixed-point BigInt arithmetic
   order-state.ts        Explicit permitted lifecycle transitions
 packages/database       @solemn/database
-  src/schema.ts         Fifteen tables, enums, indexes and constraints
+  src/schema.ts         Twenty-three tables, enums, indexes and constraints
   src/repository.ts     Validated, typed token/event/order/trade insertion
   scannerRepository.ts  Transactional scanner writes and persistent data gaps
   riskRepository.ts     Durable coalesced worklist, assessment history, fresh candidates
   strategyRepository.ts Immutable runs, observations, candles, evidence and candidate queries
+  paperRepository.ts    Locked financial transactions, ledger and recovery snapshots
+  historyRepository.ts  Immutable datasets and paginated historical observations
+  backtestRepository.ts Isolated runs, scheduled executions, equity and results
   drizzle/              Committed generated SQL and schema metadata
 ```
 
@@ -53,7 +58,7 @@ The dependency direction is worker → database → shared; worker also uses sha
 
 Simulation supports submitted orders, full fills, one partial fill, fixture failures, and cancellation of an unfilled remainder. It tracks exact USD cash and acquired token quantities, refuses overspending and naked selling, and replays an order ID without applying a second fill. Returned objects and input fixtures are copied. Cancelling after a partial fill retains the fill, fees, and holdings. Terminal orders cannot resume.
 
-The adapter is an **in-memory test simulator**, not a durable account ledger. It has no order reservation engine, subsequent partial-fill feed, position accounting, automatic pricing, or restart recovery. The startup instance has no fixtures and cannot execute an unsolicited order. Database persistence is a separate boundary; the worker does not write simulated trades automatically.
+The adapter is an **in-memory test simulator**, not a durable account ledger. It has no order reservation engine, subsequent partial-fill feed, position accounting, automatic pricing, or restart recovery. The legacy startup adapter has no fixtures and cannot execute an unsolicited order. Week 5 adds a separate durable paper orchestration path using the existing order/fill contracts, enabled only with an explicit replay configuration.
 
 ## Technology and prerequisites
 
@@ -575,7 +580,7 @@ All research thresholds, timing limits and version are validated and documented 
 
 Migration `0005_momentum_strategy.sql` adds `strategy_runs`, `market_trade_observations`, `market_coverage_observations`, `market_candles`, `market_corrections` and `strategy_decisions`. Original datasets/configuration and normalized observations are separate from derived candles/features. Decisions embed risk evidence, before/after breakout state, transitions, reasons, timestamps and source references. Indexes support mint/time queries; unique identities and atomic transactions protect retries. Database constraints prohibit BUY candidates in `LIVE_NOT_READY` runs.
 
-The previous `trading_signals` table describes execution-oriented BUY/SELL/HOLD signals. Week 4 candidates have a distinct analysis contract and are stored separately. Week 5 can consume `listFixtureBuyCandidates(db, runId, true)` only through explicit fixture opt-in. No candidate is connected to execution. A genuine trade provider with reliable coverage, conversion and receipt-time provenance is still required before live candidate generation can be enabled.
+The previous `trading_signals` table describes execution-oriented BUY/SELL/HOLD signals. Week 4 candidates have a distinct analysis contract and are stored separately. Week 5 can consume `listFixtureBuyCandidates(db, runId, true)` only through explicit fixture opt-in. Week 4 alone does not execute candidates; Week 5 consumes them only through explicit fixture opt-in. A genuine trade provider with reliable coverage, conversion and receipt-time provenance is still required before live candidate generation can be enabled.
 
 ```bash
 pnpm typecheck
@@ -586,3 +591,272 @@ pnpm build
 ```
 
 Tests use local fixtures and a dedicated guarded test database. They cover OHLC/boundaries, missing data, exact arithmetic, risk/currentness/freshness, feed gaps, ordered state transitions, cooldown, no lookahead, deterministic replay, duplicate insertion, versioned history and unchanged order/trade tables. Structured Pino replay logs include decisions, reasons and state transitions; summary counters include evaluations, risk blocks, insufficient data, candidates, duplicate decisions and processing latency.
+
+## Week 5 — Automated Paper Trading
+
+Week 5 connects authentic, persisted Week 4 `BUY_CANDIDATE` records to a durable **PAPER** portfolio. Deterministic replay automatically simulates entry, monitors explicit sell-side observations, attempts exits and journals the resulting accounting. **Forward paper trading is NOT_READY:** Solemn still lacks a sufficiently complete live execution-observation feed. Launch/migration events and occasional Jupiter snapshots cannot substitute for that feed. No wallet, private keys, signing, swap API or blockchain execution is used.
+
+### Run the two fictional scenarios
+
+With Node 22, pnpm and the local PostgreSQL services configured:
+
+```bash
+pnpm db:migrate
+pnpm paper:replay
+pnpm paper:replay --scenario=blocked-stop
+# A custom, explicitly labelled SOLEMN_PAPER_REPLAY_V1 JSON file:
+pnpm paper:replay /absolute/path/to/paper-replay.json
+```
+
+Invoking `paper:replay` is explicit fixture opt-in. The file embeds a Week 4 market dataset plus execution observations with independent timestamps, side, pool, price, USD provenance, liquidity assumptions and optional impact/failure inputs. The bundled scenarios use fictional quotes; they are not prices collected from a real venue. File input is limited to 10 MiB, the existing two-hour strategy dataset bound, the tracked-token limit, and 1,000 execution observations. Portfolio replay history is capped at 1,000 positions; use separate research accounts for larger experiments.
+
+The first scenario starts with $100, consumes the real output of the fixture strategy, and budgets at most $1 including entry fees. It then simulates the first and second profit targets, a new trailing high and a trailing exit. The second scenario crosses the stop threshold after liquidity falls to zero: its sell fails and the position stays `EXIT_BLOCKED`, with its quantity and cost basis intact. These are deterministic accounting demonstrations, not profitability validation or historical backtests.
+
+Logs report the portfolio UUID. Inspect a portfolio and its reconstructed ledger with:
+
+```bash
+pnpm paper:inspect PORTFOLIO_UUID
+pnpm paper:halt PORTFOLIO_UUID --reason="Operator review"
+# Explicit administration only; never performed automatically on startup:
+pnpm paper:reset PORTFOLIO_UUID --reason="Reviewed risk state and resumed research"
+```
+
+`paper:reset` resets the peak/daily risk baselines and clears the halt only when open positions have fresh marks and no unresolved blocked exits. It does not change cash, positions, fees or realized P&L. The action and reason are journalled. Daily-loss limits otherwise reset at the first processed event of a new UTC day; a total-drawdown halt stays latched until an explicit reset.
+
+### Accounts, sizing and entry controls
+
+Accounts have dedicated UUIDs. By default an ID derives from the replay, account name and full strategy/risk/execution configuration. The definition is immutable. Repeating the same command resumes that account and suppresses duplicate operations; it never deposits another $100. A different scenario/configuration gets a different account. Set `PAPER_PORTFOLIO_ID` to explicitly select an existing matching account; incompatible reuse is rejected.
+
+Initial defaults are 1% maximum all-in allocation and three concurrent positions. Allocation is a fraction of current marked equity, capped by available cash; it is not a promise that only 1% can be lost. Quantity sizing includes the modeled entry fee and rounds down. It rejects an order below the $0.01 minimum notional or simulation quantity precision. One active position per mint/account is enforced in both application rules and a database unique index. An unpriced/stale position blocks new entries rather than providing invented equity for sizing.
+
+An entry also requires the configured strategy/version/hash, a recent signal, its current fresh Week 3 assessment, matching risk policy, explicit reliable market observations for the same mint/pool, available cash and account limits. Week 3 security evidence is reevaluated at entry time. A newer risk request, UNKNOWN/REJECTED status, stale source evidence or mismatched assessment blocks the entry. Portfolio/signal IDs form the stable entry command and order identities. Risk/market failures are recorded as rejected decisions; execution-model failures have a persisted `FAILED` order with its reason.
+
+`PAPER_TRADING_ENABLED=false` by default. Worker replay additionally requires `PAPER_ALLOW_FIXTURE_SIGNALS=true` and `PAPER_REPLAY_PATH`; it uses the same pipeline as the CLI. Without them, enabling paper trading reports `NOT_READY`. The scanner remains an independent async service. A configured existing account is recovered before processing, and shutdown stops paper work before strategy/scanner/risk/database services. A processing error stops new work and attempts a durable `HALTED` event; a database outage can prevent recording that event, in which case processing remains stopped. Accepted paper operations are synchronous within a database transaction, with no pending external order to drain or ambiguously resume.
+
+### Execution model and order lifecycle
+
+The Week 1 `ExecutionAdapter`, `OrderRequest`, `OrderResult` and order state machine remain available for existing tests. The new stateless `PaperExecutor` reuses those order/fill contracts; a portfolio transaction supplies persisted cash/holdings and owns idempotency. The legacy in-memory adapter is not the durable account ledger.
+
+The default model applies hypothetical 1% buy fees, 1% sell fees and 1% adverse baseline price slippage. Buy prices increase and sell prices decrease; an explicit estimated impact can add further adverse slippage. Without pool reserves/order-book depth, no liquidity-derived curve is invented. Gross order notional must fit the explicitly observed liquidity and the default 1% participation cap. This is a simplified research model, not a claim about current fees, obtainable fills or Solana execution.
+
+Observations must be reliable USD quotes, received by the decision time, no older than 15 seconds and healthy. Missing price/liquidity, incompatible side/pool, zero liquidity, exceeded participation, insufficient cash/holdings, simulated transaction failure and partial-order requests fail closed. Simulated failures charge no fee; network failure fees, priority fees and rent are not modeled. Small protective exits may use less than the entry minimum; a zero-notional/dust result is rejected and remains unresolved.
+
+Orders distinguish request, `CREATED`, `SUBMITTED`, and terminal `FILLED`/`FAILED`. The transition path, request, configuration, observation, fill or error are journalled. Full simulation and settlement happen atomically, so pending orders are not exposed across transactions. Cancellation of an already completed operation and partial **order fills** are unsupported in this engine. Staged partial **position exits** are supported: each sell is a separate fully filled or failed smaller order. The earlier Week 1 fixture runner still supports its original test-only partial-fill scenarios.
+
+### Position monitoring and exit precedence
+
+A position records original and remaining quantity, actual entry fill price, fee-inclusive entry cost basis, marks and timestamps, target flags, trailing peak, fees, realized P&L and any pending blocked exit. The existing `positions.status` retains OPEN/CLOSED compatibility; `paper_state` distinguishes OPEN, EXIT_BLOCKED and CLOSED. A new purchase has no sell-side quote yet: its initial gross entry notional is only a provisional book value, clearly marked stale/uncertain until a fresh sell observation arrives.
+
+Exit rules use the modeled sell-side price before fees and the actual buy fill price as entry reference. Defaults:
+
+- Stop-loss: attempt to sell all remaining quantity at or below 75% of entry.
+- First profit target: at +60%, sell 33.3333% of the original quantity, rounded down.
+- Second target: at +150%, sell 50% of the quantity remaining after the first successful target.
+- Trailing phase: activate only after the second target fills. Start the peak at that observation's modeled sell price, then update it only from subsequently received valid sell observations. Attempt the remaining exit at a 30% decline from that peak.
+- Maximum holding time: attempt a full exit after 60 minutes when a fresh executable observation arrives.
+
+Priority is current critical token-risk rejection, stop-loss, trailing stop, maximum holding time, retry of a pending blocked exit, then the next take-profit target. Only one sell is attempted per observation; a price jump through both profit targets requires a subsequent observation for target two. A failed sell retains its pending intent for retry on fresh data. Protective exits remain enabled when daily risk controls block entries or the account is HALTED. No stop, halt, expiry or risk rule guarantees execution or limits an actual loss.
+
+Missing/stale/unhealthy observations preserve the last valid mark, mark valuations stale, stop new entries and do not claim a fill. Recovery restores target completion and trailing state from persisted events. A position becomes CLOSED only after its entire remaining quantity has a recorded sell fill.
+
+### Accounting and persistence
+
+All authoritative money and quantity calculations use decimal strings and BigInt. Currency uses 18 decimal places; simulated token quantities default to nine, configurable up to 18. This is an explicit research precision policy, not a statement about an on-chain mint's decimals. Buy price/notional and fees round upward to one USD atomic unit; sell price/notional and quantities round downward. Budget search uses these same boundaries. No quantity is rounded up to spend extra cash.
+
+Entry cost basis includes the buy notional and buy fee. A partial exit allocates remaining basis in proportion to sold/held quantity, rounding allocated basis down; the final exit takes the entire residual. Realized P&L is net sell proceeds minus allocated basis. Unrealized P&L uses estimated net sell value minus remaining basis. Actual buy/sell fees are tracked separately, without deducting them twice. Equity equals available cash plus reserved cash plus position marks. Marks and hypothetical net proceeds do not establish that liquidation is possible; liquidity uncertainty is stored separately.
+
+Each order reserves its exact estimated all-in buy cost, then atomically settles or releases it. Ledger postings explicitly record available/reserved changes, fill costs, realized P&L and fees. The invariant `cash + reserved + remaining cost basis = initial bankroll + realized P&L` is checked independently of strategy logic. Fees and equity do not use JavaScript floating-point arithmetic.
+
+Daily loss measures the decline from the first processed UTC-day baseline (the previous known marked equity) to current marked equity; positive gains do not create a daily realized-loss allowance. At a 3% daily loss, entries are disabled while existing positions remain monitored. Total drawdown measures decline from peak marked equity; reaching 10% latches HALTED. Stale valuations remain labelled and prevent entries. These controls cannot guarantee liquidation value or a maximum realized loss.
+
+Migration `0006_paper_trading.sql` adds `paper_portfolios` and append-only `portfolio_balance_events`, and extends the existing orders, trades and positions with account links, execution evidence, exact notional and exit state. It adds no duplicate order/trade tables. Composite foreign keys enforce account ownership; unique keys prevent duplicate candidates/fills and concurrent active positions. Deferred PostgreSQL triggers require matching fills and ledger evidence for paper orders, reconcile cash against postings, and reject ledger edits. Existing Week 1–4 rows remain valid. Fictional instruments are registered with `tokens.source_platform='PAPER_FIXTURE'` and UNKNOWN risk solely to satisfy the existing order/token foreign keys; they never replace canonical risk assessments or existing token metadata.
+
+Every account operation locks its portfolio row with `FOR UPDATE`. The pure accounting/exit reducer, financial rows, order evidence, ledger event and snapshot commit together or all roll back. Journal events form a hash chain. Restart recovery takes a consistent locked snapshot, verifies the chain, replays every command and posting, compares the resulting portfolio, and checks materialized order/fill/position records. Conflicting reuse of an event ID fails rather than executing a second trade.
+
+### Inspect PostgreSQL records and verify
+
+```sql
+SELECT id, name, status, available_cash_usd, reserved_cash_usd, equity_usd,
+       state->>'realizedPnlUsd' AS realized_pnl,
+       state->>'buyFeesUsd' AS buy_fees, state->>'sellFeesUsd' AS sell_fees
+FROM paper_portfolios ORDER BY created_at DESC;
+
+SELECT id, portfolio_id, side, status, requested_quantity, actual_fees_usd,
+       paper_details->>'reason' AS reason,
+       paper_details->>'failureReason' AS failure
+FROM orders WHERE portfolio_id IS NOT NULL ORDER BY created_at;
+
+SELECT portfolio_id, token_mint, paper_state, quantity, cost_basis_usd,
+       realized_pnl_usd, unrealized_pnl_usd, paper_details->>'blockedReason'
+FROM positions WHERE portfolio_id IS NOT NULL;
+
+SELECT portfolio_id, sequence, timestamp, command->>'type' AS command,
+       postings, result
+FROM portfolio_balance_events ORDER BY portfolio_id, sequence;
+```
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm test:integration
+pnpm build
+```
+
+Tests cover conservative arithmetic, fee-aware sizing, risk gates, replay identity, stale/future observations, failed liquidity exits, staged cost-basis allocation, trailing/exit priority, account loss limits and explicit reset, partial-position recovery, atomic rollback, materialized-record reconciliation and concurrent duplicate entries on independent database connections. Integration fixtures roll back; the concurrency test creates and removes its own isolated schema without leaving shared test records.
+
+Week 6 can build controlled backtest datasets, richer pool-impact/network-cost models and systematic accounting comparisons on this ledger. Forward feed integration, partial-order execution, realistic failure/network costs and verified venue fill modeling remain outside the implemented simulation. Simulated gains do not demonstrate that the same trades could execute on-chain at the same prices.
+
+## Week 6 — Historical Backtesting
+
+Week 6 adds chronological, event-driven backtesting on the existing Week 4 strategy and Week 5 paper accounting/executor. It does not add a separate financial simulator. All activity remains **PAPER ONLY**, with no wallet, signing, swaps, live order submission or paid data providers.
+
+### Data readiness and supported sources
+
+The operational data audit found 32 PumpPortal discovery events (27 launches, five migrations), with no blockchain event timestamps or slots, and 76 historical risk assessments. Existing individual trades/candles are explicitly fixture data. Discovery and occasional enrichment do not supply continuous historical trading coverage or execution liquidity. **The operational real dataset is insufficient for a real historical strategy backtest.** Counts and ranges are read fresh by the audit command; they may grow as discovery runs.
+
+```bash
+pnpm backtest --dataset historical
+```
+
+This command exports `reports/backtests/historical-data-audit/audit.json` and `report.md`, reports `HISTORICAL_DATA_INSUFFICIENT`, and exits with code 2. It performs no backtest and never silently substitutes synthetic observations. The audit separates source classes, ingestion times, absent event times/slots, risk history, fixture trades/candles, gaps and missing execution information. It does not apply current token metadata to past dates.
+
+Supported replay sources are:
+
+- Bundled, clearly labelled synthetic datasets: `fixtures`, `fixtures-winner`, `fixtures-zero-trade`.
+- A validated `SOLEMN_HISTORY_V1` JSON file, bounded to 10 MiB and 100,000 inline events by the CLI. Its manifest declares source kind, provenance, dataset/version, historical bounds, market scopes and pool-creation availability. `HISTORICAL` imports are user-supplied historical evidence, not independently verified data.
+- Registered PostgreSQL datasets selected by UUID or `postgres:UUID`. `PostgresHistoricalDataProvider` uses indexed keyset pagination, with at most 1,000 events per page. The repository's streaming registration API supports bulk iterables without loading their entire event history into memory.
+
+Normalized envelopes support individual trades, minute coverage/gaps, historical risk contexts, explicit execution observations, discovery and unknown source observations. Imports validate Solana addresses, financial strings, scope, timestamp consistency and format. Exact adjacent duplicates are filtered and counted; conflicting source identities fail the import. Dataset versions and their canonical content fingerprints are immutable after publication.
+
+The quality report includes tokens/events/trades, observation ranges, missing timestamps/prices/liquidity/security, duplicate events, gaps, missing minute coverage, uncertain ordering and tokens without ten complete priced minutes. Source-dataset quality and selected-run-range quality are exported separately. The replay still applies the actual strategy gates: a broad dataset quality summary never substitutes for per-decision readiness.
+
+### Run a backtest
+
+With PostgreSQL running and migrations applied:
+
+```bash
+pnpm db:migrate
+pnpm backtest --dataset fixtures --strategy SOLEMN_LAUNCH_MOMENTUM_V1
+pnpm backtest --dataset fixtures-winner
+pnpm backtest --dataset fixtures-zero-trade
+```
+
+The default six-scenario dataset contains:
+
+1. A momentum entry followed by staged take-profit and trailing exits.
+2. A valid entry followed by a stop-loss, filled from the later execution quote.
+3. A rising position whose liquidity disappears; its attempted exit fails and exposure remains unresolved.
+4. An unsafe token rejected before entry.
+5. A token with missing market coverage and USD observations.
+6. A lookahead trap with later price/security information that cannot approve earlier trades.
+
+The combined dataset intentionally ends with uncertain open exposure. Its final reliable equity, unrealized P&L and total net return are **unavailable**, rather than treating the unresolved position as worthless or fully recoverable. The winner-only dataset demonstrates a fully closed account, while the zero-trade dataset illustrates undefined trade ratios and the unchanged no-trade baseline. All three are fictional research scenarios, not actual historical performance.
+
+CLI options:
+
+| Option                | Meaning                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `--dataset`           | Bundled source, registered UUID, JSON path, or operational `historical` audit                             |
+| `--start`, `--end`    | ISO timestamps or `YYYY-MM-DD`; must exist within the dataset and align to UTC minutes                    |
+| `--strategy`          | `SOLEMN_LAUNCH_MOMENTUM_V1`                                                                               |
+| `--initial-balance`   | Exact positive USD string; defaults to the existing paper policy's $100                                   |
+| `--latency-ms`        | Execution delay; defaults to 1,000 ms                                                                     |
+| `--wait-ms`           | Wait after the scheduled execution time for a usable quote; defaults to 30,000 ms                         |
+| `--equity-cadence-ms` | Equity/clock-tick cadence; defaults to 60,000 ms                                                          |
+| `--batch-size`        | Event-page and same-time cohort bound, 1–1,000                                                            |
+| `--max-events`        | Explicit event/work limit, up to 1,000,000; replay timers and market evaluations also consume this budget |
+| `--output-dir`        | Output root; defaults to `reports/backtests`                                                              |
+| `--run-id`            | Optional UUID for a distinct experiment with otherwise identical economics                                |
+| `--config`            | Validated JSON options; CLI arguments override file values                                                |
+| `--verbose`           | DEBUG per-event logs; INFO remains run/signal/report oriented                                             |
+| `--help`              | Print usage without opening a database connection                                                         |
+
+Example configuration file:
+
+```json
+{
+  "dataset": "fixtures-winner",
+  "initialBalanceUsd": "100",
+  "executionLatencyMs": 1000,
+  "executionWaitMs": 30000,
+  "equityCadenceMs": 60000,
+  "batchSize": 1000,
+  "outputDirectory": "reports/backtests",
+  "tradingMode": "PAPER"
+}
+```
+
+The file can also contain complete validated `strategy`, `paper` and `risk` policy objects. Otherwise the existing environment policies are reused. Historical assessments must match the selected risk policy and remain fresh/current; a policy mismatch blocks eligibility instead of silently approving an old assessment. Unknown conditions remain unknown. Requested dates outside the dataset, unsupported modes, invalid costs/limits or missing datasets fail rather than falling back.
+
+No background backtest runs on worker startup. `pnpm backtest` is an explicit local CLI operation; no `BACKTEST_ENABLED` switch or additional network service is needed.
+
+### Ordering, clock and no-lookahead rules
+
+`SimulationClock` advances directly through historical availability times and scheduled timers, without real-world sleeping. Core strategy, risk, paper execution, cooldowns, daily windows, holding limits and exit rules receive that historical time through their existing explicit `asOf`/`at` arguments. `SystemClock` is available for normal runtime. Real-world run creation/completion metadata is separate from economic timestamps.
+
+The primary event order is **information availability**, followed by event time, semantic event priority, supplied slot/transaction/provider indexes and stable identity. SQL and JavaScript use matching bytewise canonical ordering. A signature is not treated as a transaction index. A whole bounded availability-time cohort is ingested before candle decisions at that instant. Conflicting same-time execution quotes without sufficient sequencing are marked unusable; the reused candle builder also conservatively rejects conflicting same-time trade prices rather than inventing an OHLC order; technical ID ordering does not pretend to resolve real market order. The historical clock supports millisecond precision and rejects finer availability timestamps.
+
+One-minute candles finalize at their existing end-plus-lateness cutoff. The engine retains only the recent sixteen candles and a bounded observation window, preserving prior finalized candles. Late data becomes correction evidence and invalidates affected future windows; it does not rewrite earlier signals. Pool creation must be known by the decision time. Risk contexts are updated only when their availability timestamp is reached, and older arriving assessments cannot override a newer request.
+
+Execution uses a scheduled intent. Entries and exits must wait for an observation received after the trigger, at or after the configured delay, with an observation timestamp at or after the scheduled execution time. Even zero configured latency requires a later observation. The triggering candle close or an earlier stored quote cannot automatically become a fill price.
+
+The Week 5 reducer has an optional deferred-execution mode for marks. It records the exit intent without selling; a later eligible quote uses the same executor and settlement rules. A newly observed higher-priority exit supersedes and reschedules the intent. Missing execution observations produce persisted EXPIRED/UNFILLED intent records, without fictional fills. An unavailable exit remains unresolved. Failed exits can retry on a later quote after the delay; replay end does not force liquidation at an old price.
+
+The model reuses Week 5 buy/sell fees, adverse slippage, minimum quantity/notional and liquidity participation limits. Fees and price-impact approximations remain explicit research assumptions. Pool-depth curves, priority/rent/failure-network fees and advanced stress scenarios are deferred to Week 7.
+
+### Isolation, accounting and recovery
+
+Each run has its own strategy-run identity, portfolio, decisions, orders, fills, positions and journal. Existing operational scanner events, raw historical market rows, risk history and worker account balances are not overwritten. Original imported inputs live in a separate immutable dataset store. Existing `FIXTURE`-labelled strategy/paper contracts remain the counterfactual execution container; authoritative input provenance is the backtest plan/manifest's `SYNTHETIC` or `HISTORICAL` source kind, displayed in every report.
+
+The default run UUID derives from the dataset fingerprint, selected range, policies, execution assumptions and engine version. The exact plan is persisted. A completed identical command returns the same recorded result; `--run-id` allows an independent isolated rerun. An incompatible plan cannot reuse an existing run ID. Published inputs, result rows and equity snapshots are immutable.
+
+Interrupted runs reconstruct strategy state and the scheduler from the frozen source. Paper commands retain stable identities. The historical reconstruction advances from each original command's expected state rather than feeding a later current balance into an earlier decision. Existing fills are verified and skipped, so restart after a staged partial exit does not reset targets, trailing state or cash. Week 5 recovery still verifies the hash chain and materialized financial records. Financial transactions keep the existing row lock and atomic reservation/fill/ledger guarantees.
+
+Migration `0007_historical_backtesting.sql` adds `backtest_datasets`, `backtest_dataset_events`, `backtest_runs`, `backtest_equity_snapshots`, `backtest_execution_intents` and `backtest_results`. Migration `0008_historical_replay_order_index.sql` indexes canonical bytewise replay order. Financial history uses the existing orders/trades/positions through the backtest run's unique portfolio association; there is no duplicate accounting engine.
+
+### Metrics, equity and reports
+
+Performance analysis records starting/ending cash, reliable marked equity, realized/unrealized P&L, net return, reliable peak equity, maximum observed drawdown, fees and modeled slippage. It also counts orders/failures, entries/exits, closed/open positions, maximum concurrent positions and strategy/data rejection paths.
+
+Closed-position statistics include wins, losses, break-even positions, win rate, arithmetic mean winning/losing returns, average winning/losing P&L, expectancy per closed position, median return, largest win/loss, profit factor and average holding duration. Open positions never become closed winners. Win rate uses all closed positions, including break-even positions. Profit factor uses positive/negative **closed-position net P&L**, not gross sell proceeds; it is explicitly undefined if there are no losing closed positions. Empty denominators remain unavailable. Monetary sums use exact BigInt arithmetic; displayed percentage statistics truncate at 18 decimal places.
+
+Equity snapshots are generated at the configured cadence and after portfolio changes. Cash and realized P&L remain known when marks are stale. Marked positions, total equity, unrealized P&L and drawdown become null when valuation is unreliable. CSV fields are empty in that case. Maximum drawdown is measured over reliable historical snapshots, with an explicit incomplete-coverage flag if any valuations were uncertain; it is not presented as a guaranteed full-period loss bound.
+
+Each run exports:
+
+- `report.md`: readable summary, baseline comparison, evidence links and limitations.
+- `result.json`: exact plan, provenance/fingerprint, metrics and final account state.
+- `data-quality.json`: full-source and selected-range data-quality reports.
+- `metrics.csv`: all metric values, with undefined values left empty.
+- `equity.csv`: historical equity curve and valuation-quality reasons.
+- `orders-and-fills.csv`: requests, failures, individual buys/sells, fees, slippage, per-exit P&L and holding time.
+- `positions.csv`: closed and unresolved positions, remaining quantities/basis and blocked-exit reasons.
+- `execution-intents.csv`: signal/trigger time, due time, observation, result and missed-execution evidence.
+
+Reports are generated under `reports/backtests/RUN_UUID/` and ignored by Git. Larger equity/order/intent exports stream in bounded database pages. The no-trade baseline retains the exact same initial bankroll with zero orders or fees. Baseline excess equity is unavailable when strategy equity is unreliable. No annualized returns, Sharpe ratios or statistical-significance claims are made for these small datasets.
+
+```sql
+SELECT id, status, dataset_id, portfolio_id, plan->>'startTime' AS start_time,
+       plan->>'endTime' AS end_time FROM backtest_runs;
+SELECT run_id, payload->'metrics'->'portfolio' AS portfolio_metrics
+FROM backtest_results;
+SELECT run_id, timestamp, total_equity_usd, valuation_quality
+FROM backtest_equity_snapshots ORDER BY run_id, timestamp;
+SELECT run_id, status, payload->>'reason' AS reason
+FROM backtest_execution_intents;
+```
+
+### Verification and next milestone
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm test:integration
+pnpm build
+```
+
+Local tests cover event ordering and duplicate filtering, missing timestamps/source data, paginated histories, clock/range validation, all six scenarios, delayed entry/exit scheduling, no-lookahead traps, uncertain terminal positions, exact accounting/metric denominators, result and equity reproducibility, report exports, restart after a persisted partial exit, and isolation from worker accounts and raw history. Normal tests call no live blockchain providers.
+
+A profitable backtest does not guarantee profitable live trading. Dataset quality, publication delays, selection/survivorship bias, costs and liquidity can materially change outcomes. Real-history collection/import quality remains the main limitation. Week 7 can extend pool-level execution modeling and failure/liquidity stress tests on this same replay and ledger foundation.

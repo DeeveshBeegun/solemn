@@ -24,6 +24,11 @@ export function createWorker(
     stop(): Promise<void>;
     readonly status: string;
   },
+  paperTrading?: {
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    readonly status: string;
+  },
 ) {
   // No fixtures are provided at startup: the worker cannot simulate unsolicited fills.
   const execution = new PaperExecutionAdapter(config.INITIAL_PAPER_BALANCE_USD);
@@ -45,7 +50,11 @@ export function createWorker(
         logger.info(
           {
             tradingMode: config.TRADING_MODE,
-            initialBalanceUsd: execution.getBalanceUsd(),
+            ...(config.PAPER_TRADING_ENABLED
+              ? {
+                  configuredInitialBalanceUsd: config.INITIAL_PAPER_BALANCE_USD,
+                }
+              : { initialBalanceUsd: execution.getBalanceUsd() }),
           },
           'PAPER services initialized',
         );
@@ -67,6 +76,12 @@ export function createWorker(
           await strategy.start();
         }
         if (shutdown) return;
+        if (config.PAPER_TRADING_ENABLED) {
+          if (!paperTrading)
+            throw new Error('Paper trading enabled but no service provided');
+          await paperTrading.start();
+        }
+        if (shutdown) return;
         keepAlive = setInterval(() => undefined, 60_000);
         logger.info(
           {
@@ -74,6 +89,9 @@ export function createWorker(
               ? scanner?.status
               : 'DISABLED',
             riskAnalysisEnabled: config.TOKEN_RISK_ANALYSIS_ENABLED,
+            paperTradingStatus: config.PAPER_TRADING_ENABLED
+              ? paperTrading?.status
+              : 'DISABLED',
             strategyStatus: config.STRATEGY_ENABLED
               ? strategy?.status
               : 'DISABLED',
@@ -94,7 +112,11 @@ export function createWorker(
         if (keepAlive) clearInterval(keepAlive);
         try {
           try {
-            if (config.STRATEGY_ENABLED) await strategy?.stop();
+            try {
+              if (config.PAPER_TRADING_ENABLED) await paperTrading?.stop();
+            } finally {
+              if (config.STRATEGY_ENABLED) await strategy?.stop();
+            }
           } finally {
             if (config.SCANNER_ENABLED) await scanner?.stop();
           }

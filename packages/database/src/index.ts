@@ -6,3 +6,6 @@ export * from './test-safety.js';
 export * from './scannerRepository.js';
 export * from './riskRepository.js';
 export * from './strategyRepository.js';
+export * from './paperRepository.js';
+export * from './historyRepository.js';
+export * from './backtestRepository.js';

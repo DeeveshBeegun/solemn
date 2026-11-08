@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Solemn \u2014 Automated Solana Meme Coin Trading System (paper-only foundation)",
+  "description": "Solemn — Automated Solana Meme Coin Trading System (paper-only foundation)",
   "packageManager": "pnpm@10.34.9",
   "engines": {
     "node": ">=22.13.0 <23",
@@ -22,7 +22,12 @@
     "format": "prettier --write .",
     "db:generate": "pnpm build && pnpm --filter @solemn/database db:generate",
     "db:migrate": "pnpm build && pnpm --filter @solemn/database db:migrate",
-    "strategy:replay": "pnpm build && node apps/worker/dist/strategy/replayCli.js"
+    "strategy:replay": "pnpm build && node apps/worker/dist/strategy/replayCli.js",
+    "paper:replay": "pnpm build && node apps/worker/dist/portfolio/replayCli.js",
+    "paper:inspect": "pnpm build && node apps/worker/dist/portfolio/adminCli.js inspect",
+    "paper:reset": "pnpm build && node apps/worker/dist/portfolio/adminCli.js reset",
+    "paper:halt": "pnpm build && node apps/worker/dist/portfolio/adminCli.js halt",
+    "backtest": "pnpm build && node apps/worker/dist/backtesting/cli.js"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -6,3 +6,6 @@ export * from './scanner.js';
 export * from './risk.js';
 export * from './identity.js';
 export * from './market.js';
+export * from './paper.js';
+export * from './backtest.js';
+export * from './historyQuality.js';

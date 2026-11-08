@@ -9,6 +9,7 @@ import { createLogger, safeError } from './services/logger.js';
 import { createWorker } from './services/worker.js';
 import { createScannerService } from './scanner/scannerService.js';
 import { createRiskAnalysisService } from './analysis/riskAnalysisService.js';
+import { createPaperTradingService } from './portfolio/paperTradingService.js';
 import { createStrategyService } from './strategy/strategyService.js';
 
 loadDotEnv({ quiet: true });
@@ -56,6 +57,9 @@ async function main(): Promise<void> {
   const strategy = config.STRATEGY_ENABLED
     ? createStrategyService(config, database.db, logger)
     : undefined;
+  const paper = config.PAPER_TRADING_ENABLED
+    ? createPaperTradingService(config, database.db, logger)
+    : undefined;
   const worker = createWorker(
     config,
     database,
@@ -63,6 +67,7 @@ async function main(): Promise<void> {
     scanner,
     risk,
     strategy,
+    paper,
   );
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
@@ -76,7 +81,7 @@ async function main(): Promise<void> {
         },
         config.SCANNER_DRAIN_TIMEOUT_MS +
           config.RISK_SHUTDOWN_TIMEOUT_MS +
-          15_000,
+          45_000,
       );
       try {
         await worker.stop();

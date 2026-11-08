@@ -1,0 +1,1 @@
+CREATE INDEX "backtest_dataset_replay_order_idx" ON "backtest_dataset_events" USING btree ("dataset_id","sort_key" COLLATE "C");

@@ -12,11 +12,16 @@ import {
   jsonb,
   index,
   unique,
+  uniqueIndex,
   check,
   foreignKey,
 } from 'drizzle-orm/pg-core';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 export * from './strategySchema.js';
+export * from './paperSchema.js';
+import { paperPortfolios } from './paperSchema.js';
+import { strategyDecisions } from './strategySchema.js';
+import type { PaperOrderRecord, PaperPosition } from '@solemn/shared';
 import {
   executionModeSchema,
   orderStatusSchema,
@@ -252,6 +257,14 @@ export const tradingSignals = pgTable(
 export const orders = pgTable(
   'orders',
   {
+    portfolioId: uuid('portfolio_id').references(() => paperPortfolios.id),
+    paperPositionId: uuid('paper_position_id').references(
+      (): AnyPgColumn => positions.id,
+    ),
+    strategyCandidateId: uuid('strategy_candidate_id').references(
+      () => strategyDecisions.signalId,
+    ),
+    paperDetails: jsonb('paper_details').$type<PaperOrderRecord>(),
     id: uuid('id').primaryKey(),
     tokenMint: text('token_mint')
       .notNull()
@@ -267,6 +280,18 @@ export const orders = pgTable(
     actualFeesUsd: amount('actual_fees_usd'),
   },
   (t) => [
+    unique('orders_id_portfolio').on(t.id, t.portfolioId),
+    uniqueIndex('paper_entry_signal_unique')
+      .on(t.portfolioId, t.strategyCandidateId)
+      .where(sql`${t.portfolioId} IS NOT NULL AND ${t.side} = 'BUY'`),
+    check(
+      'paper_orders_terminal',
+      sql`${t.portfolioId} IS NULL OR (${t.status} IN ('FILLED', 'FAILED', 'CANCELLED') AND ${t.paperDetails} IS NOT NULL)`,
+    ),
+    foreignKey({
+      columns: [t.paperPositionId, t.portfolioId],
+      foreignColumns: [positions.id, positions.portfolioId],
+    }),
     unique('orders_id_token_side').on(t.id, t.tokenMint, t.side),
     index('orders_token_time_idx').on(t.tokenMint, t.createdAt),
     index('orders_status_idx').on(t.status),
@@ -293,6 +318,10 @@ export const orders = pgTable(
 export const positions = pgTable(
   'positions',
   {
+    portfolioId: uuid('portfolio_id').references(() => paperPortfolios.id),
+    poolAddress: text('pool_address'),
+    paperState: text('paper_state'),
+    paperDetails: jsonb('paper_details').$type<PaperPosition>(),
     id: uuid('id').primaryKey(),
     tokenMint: text('token_mint')
       .notNull()
@@ -307,6 +336,14 @@ export const positions = pgTable(
     closedAt: time('closed_at'),
   },
   (t) => [
+    unique('positions_id_portfolio').on(t.id, t.portfolioId),
+    uniqueIndex('paper_one_active_position')
+      .on(t.portfolioId, t.tokenMint)
+      .where(sql`${t.portfolioId} IS NOT NULL AND ${t.status} = 'OPEN'`),
+    check(
+      'paper_position_state',
+      sql`${t.portfolioId} IS NULL OR (${t.paperDetails} IS NOT NULL AND ${t.poolAddress} IS NOT NULL AND ${t.paperState} IN ('OPEN', 'CLOSED', 'EXIT_BLOCKED') AND (${t.paperDetails}->>'quantity')::numeric = ${t.quantity} AND (${t.paperDetails}->>'costBasisUsd')::numeric = ${t.costBasisUsd} AND ${t.paperDetails}->>'status' = ${t.paperState})`,
+    ),
     index('positions_token_status_idx').on(t.tokenMint, t.status),
     check(
       'positions_valid_amounts',
@@ -332,6 +369,9 @@ export const positions = pgTable(
 export const trades = pgTable(
   'trades',
   {
+    portfolioId: uuid('portfolio_id').references(() => paperPortfolios.id),
+    positionId: uuid('position_id').references(() => positions.id),
+    notionalUsd: amount('notional_usd'),
     id: uuid('id').primaryKey(),
     orderId: uuid('order_id').notNull(),
     tokenMint: text('token_mint')
@@ -348,6 +388,21 @@ export const trades = pgTable(
       columns: [t.orderId, t.tokenMint, t.side],
       foreignColumns: [orders.id, orders.tokenMint, orders.side],
     }),
+    foreignKey({
+      columns: [t.orderId, t.portfolioId],
+      foreignColumns: [orders.id, orders.portfolioId],
+    }),
+    foreignKey({
+      columns: [t.positionId, t.portfolioId],
+      foreignColumns: [positions.id, positions.portfolioId],
+    }),
+    uniqueIndex('paper_one_fill_per_order')
+      .on(t.orderId)
+      .where(sql`${t.portfolioId} IS NOT NULL`),
+    check(
+      'paper_fill_metadata',
+      sql`${t.portfolioId} IS NULL OR (${t.positionId} IS NOT NULL AND ${t.notionalUsd} IS NOT NULL AND ${t.notionalUsd} > 0 AND scale(${t.notionalUsd}) <= 18 AND ${t.notionalUsd} < 1e60)`,
+    ),
     index('trades_order_idx').on(t.orderId),
     index('trades_token_time_idx').on(t.tokenMint, t.timestamp),
     check(
@@ -360,3 +415,4 @@ export const trades = pgTable(
     ),
   ],
 );
+export * from './backtestSchema.js';
