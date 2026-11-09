@@ -70,6 +70,28 @@ The adapter is an **in-memory test simulator**, not a durable account ledger. It
 
 Dependency versions are pinned and `pnpm-lock.yaml` is included. The Node and pnpm engine checks intentionally reject unsupported host versions. See the [Node release schedule](https://github.com/nodejs/Release#release-schedule) and [Drizzle migration workflow](https://orm.drizzle.team/docs/migrations) for upstream lifecycle and tooling details.
 
+## Local control panel
+
+From the repository root, with Node.js and pnpm installed:
+
+```bash
+pnpm install --frozen-lockfile
+# Run this only if you do not have an existing .env.
+cp .env.example .env
+pnpm ui
+```
+
+Open [the control panel](http://127.0.0.1:4173). On first use, open Docker Desktop and select **Database setup** in the panel to start PostgreSQL and apply migrations.
+
+- **Forward replay** runs the paper strategy on synthetic market data. Reuse an account name to resume its saved cursor, or choose a new name to start a separate account.
+- **Read-only discovery** collects live PumpPortal token launches and migrations for a chosen duration or until stopped. It uses a shared discovery account, with orders blocked and metered data disabled.
+- **Fixture backtest** runs one of the bundled synthetic datasets. **Execution stress test** lets you choose a simulation scenario and seed. Both write reports under `reports/backtests`.
+- **Configured worker** starts the standalone scanner, risk, strategy, and fixture paper services according to `.env`. Use the dedicated forward modes for forward sessions.
+
+The panel runs one process at a time. **Process log** shows the current or last dashboard run. **Account events** and **Forward account** show data saved in PostgreSQL for the displayed account, including after a restart. **Stop** requests shutdown of the dashboard-owned process. A separate terminal worker must be stopped in its own terminal.
+
+Press Ctrl+C in the launcher terminal to close the panel and request shutdown of its process. PostgreSQL remains available. The dashboard binds to loopback only. Use `SOLEMN_UI_PORT=4180 pnpm ui` if the default port is in use. Changes to `.env` take effect when you restart the launcher.
+
 ## Installation and first run
 
 Run all commands from this repository's root. With nvm installed:

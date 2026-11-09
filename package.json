@@ -57,7 +57,8 @@
     "solemn:reconcile": "pnpm build && node apps/worker/dist/operations/cli.js reconcile",
     "solemn:incidents": "pnpm build && node apps/worker/dist/operations/cli.js incidents",
     "release:verify": "node scripts/release-verify.mjs",
-    "release:smoke": "pnpm build && node scripts/release-smoke.mjs"
+    "release:smoke": "pnpm build && node scripts/release-smoke.mjs",
+    "ui": "pnpm build && node apps/worker/dist/ui/server.js"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

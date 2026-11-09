@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Launch and monitor Solemn from your local browser."
+    />
+    <title>Solemn · Control panel</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+    <script type="module" src="/dashboard.js"></script>
+  </head>
+  <body>
+    <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="mark" viewBox="0 0 24 24">
+        <path
+          d="M5 7.5 12 4l7 3.5-7 3.5L5 7.5Zm0 4.5 7 3.5 7-3.5M5 16.5l7 3.5 7-3.5"
+        />
+      </symbol>
+      <symbol id="replay" viewBox="0 0 24 24">
+        <path d="M4 11a8 8 0 1 1 2 6M4 5v6h6m2-3v4l3 2" />
+      </symbol>
+      <symbol id="radar" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7a5 5 0 1 0 5 5m-5 0 6-6m-6 6h.01" />
+      </symbol>
+      <symbol id="chart" viewBox="0 0 24 24">
+        <path d="M4 4v16h16M8 15l4-5 3 2 5-6" />
+      </symbol>
+      <symbol id="flask" viewBox="0 0 24 24">
+        <path
+          d="M9 3h6m-5 0v7l-5 8a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-8V3M7 15h10"
+        />
+      </symbol>
+      <symbol id="layers" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="16" height="6" rx="1" />
+        <rect x="4" y="14" width="16" height="6" rx="1" />
+        <path d="M8 7h.01M8 17h.01" />
+      </symbol>
+      <symbol id="db" viewBox="0 0 24 24">
+        <ellipse cx="12" cy="6" rx="7" ry="3" />
+        <path d="M5 6v12c0 4 14 4 14 0V6M5 12c0 4 14 4 14 0" />
+      </symbol>
+      <symbol id="play" viewBox="0 0 24 24">
+        <path d="m8 5 11 7-11 7V5Z" />
+      </symbol>
+      <symbol id="stop" viewBox="0 0 24 24">
+        <rect x="6" y="6" width="12" height="12" rx="1" />
+      </symbol>
+      <symbol id="pulse" viewBox="0 0 24 24">
+        <path d="M2 12h5l3-7 4 14 3-7h5" />
+      </symbol>
+      <symbol id="terminal" viewBox="0 0 24 24">
+        <path d="m5 7 5 5-5 5m8 0h6" />
+      </symbol>
+      <symbol id="shield" viewBox="0 0 24 24">
+        <path d="M12 3 5 6v5c0 4 2.5 7.5 7 10 4.5-2.5 7-6 7-10V6l-7-3Z" />
+        <path d="m9 12 2 2 4-4" />
+      </symbol>
+    </svg>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Solemn dashboard">
+        <span class="brand-icon"
+          ><svg><use href="#mark" /></svg
+        ></span>
+        <span>SOLEMN</span>
+      </a>
+      <span class="top-divider"></span>
+      <span class="top-caption">Local control panel</span>
+      <div class="top-status">
+        <span class="top-db" id="database-status" data-tone="muted"
+          ><i></i><span>Checking database</span></span
+        >
+        <span class="safe-pill"
+          ><svg><use href="#shield" /></svg> Paper only</span
+        >
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow"><i></i> SOLEMN / WORKSPACE</p>
+        <h1 id="page-title">Control panel</h1>
+        <p>Launch a Solemn process and follow its activity as it runs.</p>
+      </section>
+
+      <nav class="navigation" aria-label="Launch modes">
+        <p class="eyebrow nav-label">Run modes</p>
+        <div class="nav-list">
+          <button class="nav-item" data-mode="replay" aria-current="true">
+            <svg><use href="#replay" /></svg>Forward replay
+          </button>
+          <button class="nav-item" data-mode="discovery" aria-current="false">
+            <svg><use href="#radar" /></svg>Read-only discovery
+          </button>
+          <button class="nav-item" data-mode="backtest" aria-current="false">
+            <svg><use href="#chart" /></svg>Fixture backtest
+          </button>
+          <button class="nav-item" data-mode="stress" aria-current="false">
+            <svg><use href="#flask" /></svg>Execution stress test
+          </button>
+          <button class="nav-item" data-mode="worker" aria-current="false">
+            <svg><use href="#layers" /></svg>Configured worker
+          </button>
+        </div>
+        <div class="nav-rule"></div>
+        <p class="eyebrow nav-label">Setup</p>
+        <button class="nav-item" data-mode="database" aria-current="false">
+          <svg><use href="#db" /></svg>Database setup
+        </button>
+      </nav>
+
+      <div class="work">
+        <section class="panel launch" aria-labelledby="mode-title">
+          <div class="panel-body">
+            <div class="mode-icon">
+              <svg><use id="mode-icon" href="#replay" /></svg>
+            </div>
+            <p class="eyebrow" id="mode-kicker">Simulation</p>
+            <h2 id="mode-title">Forward paper replay</h2>
+            <p class="mode-description" id="mode-description">
+              Run the forward strategy against a bundled market replay. Orders,
+              fills, and balances are simulated.
+            </p>
+            <form id="launch-form">
+              <div class="fields" data-fields="replay">
+                <label for="account">Replay account</label>
+                <input
+                  id="account"
+                  name="account"
+                  value="week8"
+                  pattern="[a-zA-Z0-9_\-]{1,50}"
+                  maxlength="50"
+                  autocomplete="off"
+                  aria-describedby="account-help"
+                />
+                <small id="account-help"
+                  >Reuse a name to resume its saved cursor. Use a new name to
+                  start a separate paper account.</small
+                >
+              </div>
+              <div class="fields" data-fields="discovery" hidden>
+                <label for="duration">Collection window</label>
+                <select id="duration" name="duration">
+                  <option value="30">30 seconds</option>
+                  <option value="60">1 minute</option>
+                  <option value="120">2 minutes</option>
+                  <option value="300">5 minutes</option>
+                  <option value="continuous">Until stopped</option>
+                </select>
+                <small
+                  >Uses the same discovery account across sessions. Metered data
+                  is disabled.</small
+                >
+              </div>
+              <div class="fields" data-fields="backtest" hidden>
+                <label for="dataset">Fixture dataset</label>
+                <select id="dataset" name="dataset">
+                  <option value="fixtures">Standard fixtures</option>
+                  <option value="fixtures-analytics">Analytics fixtures</option>
+                  <option value="fixtures-winner">
+                    Winning position fixture
+                  </option>
+                  <option value="fixtures-zero-trade">
+                    Zero-trade fixture
+                  </option>
+                </select>
+                <small
+                  >Writes a report under <code>reports/backtests</code>.</small
+                >
+              </div>
+              <div class="fields field-grid" data-fields="stress" hidden>
+                <div class="fields">
+                  <label for="scenario">Execution scenario</label>
+                  <select id="scenario" name="scenario">
+                    <option value="all">All scenarios</option>
+                    <option value="idealized">Idealized</option>
+                    <option value="baseline">Baseline</option>
+                    <option value="pessimistic">Pessimistic</option>
+                    <option value="extreme">Extreme</option>
+                    <option value="week6-reference">Week 6 reference</option>
+                  </select>
+                </div>
+                <div class="fields">
+                  <label for="seed">Random seed</label>
+                  <input
+                    id="seed"
+                    name="seed"
+                    type="number"
+                    value="42"
+                    min="0"
+                    max="2147483647"
+                    step="1"
+                  />
+                </div>
+                <small
+                  >Reuse the seed to reproduce the same simulation
+                  inputs.</small
+                >
+              </div>
+              <p class="form-error" id="form-error" role="alert" hidden></p>
+              <div class="launch-actions">
+                <button
+                  class="primary"
+                  id="launch-button"
+                  type="submit"
+                  disabled
+                >
+                  <svg><use href="#play" /></svg><span>Launch replay</span>
+                </button>
+                <span class="launch-note" id="mode-note"
+                  >Synthetic market data</span
+                >
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel account-panel" aria-labelledby="account-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Persisted status</p>
+              <h2 id="account-title">Forward account</h2>
+            </div>
+            <span class="chip" id="account-label">week8</span>
+          </div>
+          <p class="account-summary" id="account-summary">
+            Looking up account…
+          </p>
+          <dl class="metrics">
+            <div>
+              <dt>Paper equity</dt>
+              <dd id="equity">—</dd>
+            </div>
+            <div>
+              <dt>Tracked tokens</dt>
+              <dd id="tracked">—</dd>
+            </div>
+            <div>
+              <dt>Open positions</dt>
+              <dd id="positions">—</dd>
+            </div>
+            <div>
+              <dt>Paper fills</dt>
+              <dd id="fills">—</dd>
+            </div>
+          </dl>
+          <div class="account-footer">
+            <span id="account-feed">Feed —</span
+            ><span id="account-detail">Awaiting account data</span>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel activity" aria-labelledby="activity-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Process monitor</p>
+            <h2 id="activity-title">Activity</h2>
+          </div>
+          <span class="state-chip" id="process-state" data-tone="muted"
+            ><i></i><span>Idle</span></span
+          >
+        </div>
+        <div class="run-summary">
+          <span class="terminal-icon"
+            ><svg><use href="#terminal" /></svg
+          ></span>
+          <div>
+            <strong id="run-name">No process started</strong>
+            <small id="run-time">Choose a mode to begin</small>
+          </div>
+          <button class="stop" id="stop-button" type="button" disabled>
+            <svg><use href="#stop" /></svg>Stop
+          </button>
+        </div>
+        <div class="tabs" role="group" aria-label="Activity view">
+          <button type="button" id="logs-tab" aria-pressed="true">
+            Process log
+          </button>
+          <button type="button" id="events-tab" aria-pressed="false">
+            Account events
+          </button>
+        </div>
+        <div
+          class="activity-content"
+          id="activity-content"
+          tabindex="0"
+          aria-label="Activity entries"
+        >
+          <div class="empty" id="activity-empty">
+            <span
+              ><svg><use href="#pulse" /></svg
+            ></span>
+            <strong>Waiting for a process</strong>
+            <p>
+              Startup, progress, and shutdown messages appear here after launch.
+            </p>
+          </div>
+          <ol class="entries" id="entries" hidden></ol>
+        </div>
+        <div class="activity-footer">
+          <i></i><span id="update-note">Connecting to local launcher</span>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
