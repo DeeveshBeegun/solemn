@@ -1,13 +1,48 @@
-import { stableHash } from '@solemn/shared';
+import { idSchema, stableHash } from '@solemn/shared';
+import type { PaperOrderRecord } from '@solemn/shared';
 import type { PaperRepository } from '@solemn/database';
 import { initialPortfolio, initialPosting } from './accountingService.js';
 import { applyPaperCommand } from './portfolioManager.js';
+
+function legacyAuditReferences(
+  replayed: PaperOrderRecord,
+  stored: PaperOrderRecord | undefined,
+): PaperOrderRecord {
+  const audit = replayed.audit;
+  const legacy = stored?.audit;
+  if (
+    !audit ||
+    !legacy ||
+    legacy.modelVersion !== 'SOLEMN_EXECUTION_V1' ||
+    legacy.context.config.revision !== undefined ||
+    legacy.context.pool?.quality !== 'SYNTHETIC' ||
+    Object.hasOwn(legacy, 'signalId') ||
+    Object.hasOwn(legacy, 'positionId')
+  )
+    return replayed;
+  const comparable = { ...audit };
+  delete comparable.signalId;
+  delete comparable.positionId;
+  // Early synthetic executions used an opaque post-swap snapshot ID.
+  // Keep validating the entire pool, reserves, amounts and fees against replay.
+  if (
+    comparable.updatedPool &&
+    legacy.updatedPool &&
+    idSchema.safeParse(legacy.updatedPool.id).success
+  )
+    comparable.updatedPool = {
+      ...comparable.updatedPool,
+      id: legacy.updatedPool.id,
+    };
+  return { ...replayed, audit: comparable };
+}
 /** Replays the immutable command/posting journal, rather than trusting a mutable balance snapshot. */
 export async function recoverPortfolio(
   repository: PaperRepository,
   portfolioId: string,
+  loaded?: Awaited<ReturnType<PaperRepository['snapshot']>>,
 ) {
-  const snapshot = await repository.snapshot(portfolioId);
+  const snapshot = loaded ?? (await repository.snapshot(portfolioId));
   const { events: history, ...account } = snapshot;
   if (!history.length) throw new Error('Missing portfolio ledger');
   let state = initialPortfolio(account.definition),
@@ -40,19 +75,21 @@ export async function recoverPortfolio(
         row.command,
         account.definition,
       );
+      const recorded = stableHash({
+        state: row.stateAfter,
+        postings: row.postings,
+        orders: row.orders,
+        result: row.result,
+      });
       if (
-        stableHash({
-          state: replayed.state,
-          postings: replayed.postings,
-          orders: replayed.orders,
-          result: replayed.result,
-        }) !==
-        stableHash({
-          state: row.stateAfter,
-          postings: row.postings,
-          orders: row.orders,
-          result: row.result,
-        })
+        stableHash(replayed) !== recorded &&
+        (account.definition.dataMode !== 'FIXTURE' ||
+          stableHash({
+            ...replayed,
+            orders: replayed.orders.map((order, index) =>
+              legacyAuditReferences(order, row.orders[index]),
+            ),
+          }) !== recorded)
       )
         throw new Error('Portfolio history replay mismatch');
       state = replayed.state;

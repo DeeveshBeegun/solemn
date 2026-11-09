@@ -860,3 +860,300 @@ pnpm build
 Local tests cover event ordering and duplicate filtering, missing timestamps/source data, paginated histories, clock/range validation, all six scenarios, delayed entry/exit scheduling, no-lookahead traps, uncertain terminal positions, exact accounting/metric denominators, result and equity reproducibility, report exports, restart after a persisted partial exit, and isolation from worker accounts and raw history. Normal tests call no live blockchain providers.
 
 A profitable backtest does not guarantee profitable live trading. Dataset quality, publication delays, selection/survivorship bias, costs and liquidity can materially change outcomes. Real-history collection/import quality remains the main limitation. Week 7 can extend pool-level execution modeling and failure/liquidity stress tests on this same replay and ledger foundation.
+
+## Week 7 — Realistic Execution and Stress Testing
+
+Week 7 adds an optional execution-aware path to the existing Week 5 paper executor and Week 6 event replay. Solemn remains **PAPER ONLY**: `TRADING_MODE=PAPER`, `ENABLE_LIVE_TRADING=false`. No wallets, signing, private keys or transaction submission were added.
+
+Run with the existing Node 22/pnpm setup, `.env`, and local PostgreSQL service:
+
+```bash
+pnpm db:migrate
+pnpm backtest:stress --dataset fixtures --scenario all --seed 42
+```
+
+`all` runs idealized, baseline, pessimistic and extreme execution plus the unchanged Week 6 execution reference over the same explicit-reserve stress dataset. Individual scenarios can be selected with `--scenario baseline,pessimistic`. Options include `--start`, `--end`, `--strategy SOLEMN_LAUNCH_MOMENTUM_V1`, `--output reports/backtests`, and `--seed`. Dates must lie within the selected dataset and align to UTC minutes. The fixture covers **2026-01-01T00:00:00.000Z through 00:20:00.000Z**. File paths and `postgres:<dataset UUID>` are accepted; `--dataset real` errors because operational history currently lacks verified historical reserves. Synthetic observations are never silently substituted for requested real data.
+
+### Execution model and assumptions
+
+`execution/simulation/` contains the registered pool models, fee calculation, deterministic execution scenarios, quote preparation, latency calculation and transaction simulation. The existing replay clock schedules processing, quote retrieval, preparation, submission and landing. A quote retains its original reserve snapshot; execution waits for an eligible landing observation and checks a maximum input for exact-output buys or minimum output for exact-input sells. Slippage tolerance is a constraint, not an extra percentage deducted from an already impacted price.
+
+`REFERENCE_CPMM_V1` is a precisely defined **research** constant-product venue. It uses integer reserves and `floor(y × fee-adjusted input / (x + fee-adjusted input))`, supports buy/sell directions and token transfer fees, retains LP fees, separates external fee recipients and returns hypothetical post-fill reserves. Larger trades cause greater curve impact. It does not infer reserves from aggregate USD liquidity. Pump.fun bonding curves, PumpSwap, CLMM, DLMM, multi-hop and unknown models return explicit unsupported results.
+
+Fee audits distinguish LP, protocol, creator, routing, integrator, token transfer, network base, priority and explicit route tips. Inapplicable categories stay zero. Fees embedded in swap output are split out for reporting and deducted only once. Legacy/v0 priority costs use the requested CU limit; V1 uses its separate absolute-lamport configuration. Historical SOL/USD is required to value native costs; absent or future conversion rates cannot produce complete net USD results. Supplied scenarios assume existing token accounts. Nonzero recoverable rent is explicitly unsupported and is never treated as a lost trading fee.
+
+Outcomes distinguish filled, rejected before submission, included failure, never-landed drop, expiry and unverifiable landing. Included failures debit modeled validator fees without creating a buy position or removing sell tokens. Dropped/local failures do not pay imaginary landed fees. Ambiguous outcomes halt automatic execution and cannot blindly retry. Retry windows are bounded; a demonstrated return of executable liquidity permits another bounded attempt.
+
+The shared fixture includes a greater-than-90% gap, liquidity removal/return and frozen transfers. A stop trigger does **not** guarantee a fill or a 25% maximum loss. Unresolved tokens remain recorded, and unreliable liquidation/equity values remain unknown. Higher latency can change fills and future portfolio decisions; completed trades are not forced to match across scenarios.
+
+See [the execution research and full assumption register](docs/week7-execution-assumptions.md) for official sources, fee units/effective periods, pool formulas, funding assumptions, time/expiry semantics, scenario probabilities and unsupported execution types. Parameters are experimental assumptions, not measured historical latency/failure distributions. Future external snapshots reset the hypothetical reserve anchor; market feedback is not modeled.
+
+### Reports and persistence
+
+Reports are written to `reports/backtests/stress-<experiment UUID>/`:
+
+- `comparison.json`, `comparison.csv`, `comparison.md`: computed scenario metrics, dataset fingerprint and seed.
+- Each run directory: existing result, equity, intent, position and order/fill exports; `execution-costs.csv` separates successful and failed costs; `execution-audit.jsonl` preserves full quote/landing pools, model configuration, fees, order and accounting postings.
+
+Fill rates use attempted orders as denominators, separately for entries/exits. Reports include outcomes, average/median actual latency, average/maximum curve impact, fees by category, failed-transaction expenses and unknown native exposure. UNKNOWN return/equity/drawdown is not zero. Known realized P&L does not settle open exposure; unknown native costs make net USD performance incomplete. The minimal-cost idealized scenario is a diagnostic approximation. Fixture results must not be presented as historical profitability.
+
+Migration `0009_execution_realism.sql` adds immutable `execution_simulation_attempts` and `backtest_scenarios`. Pool snapshots live inside the existing immutable historical execution events. Attempts reference the original order, run and portfolio; insertion shares the portfolio/order/fill transaction. Ledger replay and materialized audit checks protect reconciliation and idempotency. `0010_scenario_membership.sql` allows a cached run to appear in multiple comparison experiments. Earlier completed Week 6 results and worker accounts are preserved; execution settings change run identities rather than rewriting history.
+
+### Verification and Week 8
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm test:integration
+pnpm build
+pnpm backtest:stress --dataset fixtures --scenario all --seed 42
+```
+
+New offline tests cover exact reserve math, size impact, unsupported pools, quote-to-landing gaps, stale/missing observations, included-failure versus dropped costs, historical FX, transfer fees, native transaction formats, deterministic replay, blocked exits, restored liquidity and database-backed reconciliation/idempotency. Integration tests use only the dedicated local `solemn_test` database.
+
+Week 8 can build on this tested execution/accounting interface, but credible historical strategy evaluation still requires program-specific historical reserves/depth, applicable fee schedules and observed transaction outcomes. Pump-specific pricing, rent-asset accounting and confirmation reconciliation remain deferred. A simulator is an approximation, not a guarantee of equivalent live fills.
+
+## Week 8 — Autonomous Forward Paper Trading
+
+Solemn can run an autonomous forward session over a deterministic market stream. It uses the Week 4 candle and momentum logic, Week 5 position rules and ledger, and Week 7 reserve-based paper execution. The forward account starts with the configured virtual bankroll, which defaults to $100. Every order is paper-only.
+
+| Path                   | Input                                                                                                     | Account and execution                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Historical backtest    | Selected stored historical or synthetic dataset                                                           | Isolated backtest portfolio and result                                                           |
+| Forward replay         | A bounded synthetic stream with timestamped risk, trades, coverage, reserve observations and a disconnect | Persistent named forward replay portfolio with automatic entries and exits                       |
+| Live read-only forward | PumpPortal discovery and migration, with an optional metered token trade subscription                     | Separate live evidence account. Strategy and paper fills are `NOT_READY` pending verified inputs |
+| Real-money trading     | Real funds and signed orders                                                                              | Disabled by configuration validation                                                             |
+
+### Run and monitor a forward replay
+
+Start the local PostgreSQL service and apply the migrations. Use the existing Node and pnpm versions from setup.
+
+```bash
+docker compose up -d --wait postgres
+pnpm db:migrate
+FORWARD_PAPER_ENABLED=true pnpm paper:forward
+pnpm paper:status
+pnpm paper:positions
+pnpm paper:performance
+```
+
+The CLI selects `REPLAY` by default. It advances a simulation clock through a 20-minute source tape and exits after processing the last frame. The same enable flag selects the forward path through `pnpm dev` or `pnpm start`. Disable the standalone scanner, strategy and fixture paper service when using the forward path. Set `FORWARD_ACCOUNT` consistently when running or inspecting a named replay. The default is `week8`. Reusing the name recovers its ledger and cursor, including after an interrupted session. Choose a new name when you deliberately want a separate bankroll or change the account's immutable risk and strategy configuration.
+
+`paper:status` shows the session and heartbeat, data source and feed health, watched tokens, open positions, cash, reliably marked equity, realized P&L, current drawdown, and the latest trade, signal and market observation. `paper:positions` shows quantity, cost basis, exit state and trailing high. Stale or blocked holdings have unknown unrealized value. `paper:performance` uses the backtest performance analyzer over persisted decisions and the financial journal. It reports fill rates, failed attempts, fees, realized and marked results, reliable-snapshot drawdown, win/loss statistics, expectancy and holding time. Supply `--backtest-run <UUID>` to compare with a stored backtest. The output shows differences in strategy, risk, execution, data quality and signal frequency. `INSUFFICIENT_SAMPLE` indicates fewer than 30 closed positions, a descriptive reporting threshold for this milestone.
+
+```bash
+pnpm paper:pause
+pnpm paper:resume
+pnpm paper:forward-halt
+pnpm paper:forward-reset
+```
+
+Pause and resume persist in PostgreSQL, including while the worker is stopped. Pause blocks new entries and allows protective paper exits. The worker reads the control row within each financial frame, so a frame already holding the row lock can finish before pause takes effect. A risk halt also blocks new entries. Reset applies the existing ledger checks for unresolved exposure and execution uncertainty. Resume alone cannot clear a halt. These commands target the forward account selected by `FORWARD_MARKET_DATA_MODE` and `FORWARD_ACCOUNT`.
+
+### Replay decisions, execution and recovery
+
+Discovery and fresh risk evidence control admission to a bounded watchlist. In replay, the fixture supplies pool creation time independently of discovery time. Held positions get priority even when a token becomes ineligible for new entries. Coverage starts at watchlist admission. Candles that overlap an outage are incomplete, and the strategy needs a fresh history window after reconnect. The existing momentum and risk thresholds govern `BUY_CANDIDATE` decisions. A decision only becomes an entry intent until a current risk check, fresh trade history, cash and account limits, and an eligible post-delay landing observation allow execution.
+
+The paper executor prepares a Week 7 quote from evidence already available at quote time. A later observation supplies the simulated landing reserves and historical SOL/USD input. The executor checks slippage and charges the configured modeled fees. Exit intents use the existing stop, partial take-profit, trailing-stop, holding-time and critical-risk rules. Failed or unverifiable exits preserve quantity and cost basis. Stale or unexecutable positions report uncertain liquidation values. An ambiguous execution blocks automatic execution until reconciliation.
+
+PostgreSQL grants one worker a session advisory lock per forward portfolio. The worker uses that same connection for financial writes. One transaction commits the frame cursor, pending intents, strategy decisions, orders, fills, audit and balance postings. Startup reconciles the immutable ledger and rebuilds the bounded candle/watchlist context up to the saved cursor. The checkpoint retains cooldowns and pending simulated intents. The ledger retains holdings, take-profit flags and trailing peaks. The runtime marks valuations uncertain at disconnect and cancels pending attempts. Fresh evidence can schedule a protective exit after recovery.
+
+Runtime transitions start at `STARTING` and `RECOVERING`. Healthy, execution-ready replay can become `RUNNING` under the Week 11 controller. Missing data, gaps and inadequate history result in `DEGRADED`. Administrative pause yields `PAUSED`. A risk or integrity failure can produce `HALTED`. On shutdown the service drains accepted work, reconciles the ledger and records `STOPPING` and `STOPPED` or a failed session. Replay account limits still include the existing 1,000-position ledger capacity. A replay with a completed cursor stays completed on restart.
+
+Default risk settings reuse the existing $100 bankroll, 1% maximum position allocation, three concurrent holdings, 3% daily loss limit and 10% drawdown limit. Existing paper settings govern the 25% stop, two profit targets, trailing stop and maximum holding time. The Week 7 baseline scenario supplies replay execution settings. `FORWARD_MAX_TRACKED_TOKENS`, `FORWARD_MAX_MARKET_DATA_AGE_SECONDS` and `FORWARD_EQUITY_SNAPSHOT_INTERVAL_SECONDS` set the operational limits. See `.env.example` for defaults.
+
+### Live read-only evidence and provider budget
+
+The live path uses one existing PumpPortal scanner connection for discovery, migration, and explicitly permitted token trades. It persists validated discovery/migration using the scanner repository. Set `TOKEN_RISK_ANALYSIS_ENABLED=true` to run the existing read-only Jupiter and Solana risk checks and make current eligible tokens available for subscription. With metered data disabled, the collector uses the free subscriptions and omits the provider credential from the connection. The local discovery timestamp controls candidate expiry only. The live path needs independently verified pool creation times before strategy admission.
+
+For a bounded free discovery smoke test, run the following with an explicitly configured live data endpoint and metered data disabled.
+
+```bash
+FORWARD_PAPER_ENABLED=true FORWARD_MARKET_DATA_MODE=LIVE_READ_ONLY ENABLE_METERED_MARKET_DATA=false pnpm paper:forward --smoke-seconds 30
+FORWARD_MARKET_DATA_MODE=LIVE_READ_ONLY pnpm paper:status
+```
+
+For metered collection, set `ENABLE_METERED_MARKET_DATA=true` and `PUMPPORTAL_API_KEY` in your ignored environment file, then start the live read-only path. PumpPortal documents a funded account requirement of at least 0.02 SOL for token/account subscriptions and a charge of 0.01 SOL per 10,000 streamed events. Discovery and migration are free. [PumpPortal data documentation](https://pumpportal.fun/data-api/real-time/) and [fee schedule](https://pumpportal.fun/fees/).
+
+The local budget counts recognized buy/sell receipts, including duplicate and incomplete trade messages, before deduplicating research records. `FORWARD_DAILY_EVENT_BUDGET` defaults to 10,000 per UTC day. At the limit the worker disconnects and persists a latch that survives restart and UTC rollover. An interrupted metered session also requires rearming because consumption between the last commit and disconnect is uncertain. With the live worker stopped, `FORWARD_MARKET_DATA_MODE=LIVE_READ_ONLY pnpm paper:rearm-metered` allows an operator to clear the latch on a later UTC day. Provider billing can include messages the local counter never receives or classifies. The local budget does not enforce a provider-side billing cap.
+
+**Forward replay is supported. Live forward paper trading is NOT_READY.** Live normalization currently preserves sanitized trade evidence with exact amount strings and explicit source time when supplied. Discovery, migration and trade payloads still need independently established transaction order and coverage, pool creation time, historical USD conversion, supported reserve state and applicable fees before the strategy can use them. Pump.fun and PumpSwap execution models remain unsupported. The automated transport test uses an offline mock. No paid or genuine live smoke session was run during verification.
+
+### Inspect forward records
+
+Migration `0011_forward_paper.sql` adds `forward_accounts` and an append-only `forward_runtime_events` journal. Session events keep the history of prior processes. Runtime events hold gaps, decisions, intent changes, control actions, evidence and equity snapshots. The existing financial tables store positions, orders and fills. Execution audit rows reference either a backtest run or a forward portfolio.
+
+```sql
+SELECT f.portfolio_id, f.mode, f.status, f.paused, p.available_cash_usd
+FROM forward_accounts f JOIN paper_portfolios p ON p.id = f.portfolio_id;
+
+SELECT kind, at, details
+FROM forward_runtime_events
+WHERE kind IN ('SIGNAL', 'GAP_STARTED', 'GAP_ENDED', 'PAPER_RESULT')
+ORDER BY at;
+
+SELECT forward_portfolio_id, outcome, executed_at, payload->>'networkFeeUsd' AS network_fee_usd
+FROM execution_simulation_attempts
+WHERE forward_portfolio_id IS NOT NULL
+ORDER BY executed_at;
+```
+
+The deterministic example opened one position, sold two partial take-profit quantities, and closed the remainder on a trailing stop. The journal recorded a 65-second outage while the position was open. It finished with $101.098514 available from $100 and no remaining tokens. The simulated outcome measures the fixture path. See the actual fees, commands and tests in the [Week 8 verification report](docs/week8-verification.md).
+
+Week 9 can focus on verifying live transaction continuity, pool identity and creation time, USD rates, and venue-specific executable depth. Those are the dependencies that keep the live strategy gate closed.
+
+## Week 9 — Performance Analytics and Strategy Validation
+
+Week 9 evaluates reconciled paper portfolios. The analytics reader captures a consistent PostgreSQL snapshot and replays the immutable ledger through the selected cutoff. It joins persisted orders, fills, execution audits, signal decisions and equity marks. Evaluating a period leaves the portfolio and its strategy unchanged.
+
+### Run an evaluation
+
+Apply the migrations, run the deterministic research fixture and copy the portfolio UUID printed by the backtest.
+
+```bash
+pnpm db:migrate
+pnpm backtest --dataset fixtures-analytics
+
+# Replace the quoted value with the portfolio UUID from the backtest output.
+portfolio_id='PORTFOLIO_UUID'
+pnpm analytics:summary --source synthetic --portfolio "$portfolio_id"
+pnpm analytics:trades --portfolio "$portfolio_id"
+pnpm analytics:signals --portfolio "$portfolio_id"
+pnpm analytics:report --source synthetic --portfolio "$portfolio_id"
+pnpm analytics:compare --source forward --against "$portfolio_id"
+```
+
+Select a UUID with `--portfolio`, or select the latest portfolio in a source with `--source`. The sources are `historical` for stored historical backtests, `synthetic` for fixture backtests, `forward-replay` for a replay through the forward runtime, `forward` for genuine forward paper collection and `paper-replay` for standalone paper replay. With no selection the CLI looks for genuine forward data and reports insufficient data if it is absent. `--strategy` selects the supported strategy, `SOLEMN_LAUNCH_MOMENTUM_V1`. Comparison and report commands accept one reference via `--against UUID` or `--against-source SOURCE`.
+
+Reports persist an immutable evaluation in PostgreSQL and publish under `reports/analytics/<evaluation-id>/` by default. Use `--output PATH` to select another root. Each evaluation contains `summary.md`, `metrics.json`, `data-quality.json` and CSVs for trades, signals, segments and equity. Running the same report with the same inputs reuses its identity and output. The summary, trades, signals and comparison commands read stored data without creating evaluation records.
+
+### P&L, drawdown and fees
+
+Period P&L uses ledger deltas. The report shows realized P&L, reliably marked ending unrealized P&L and net portfolio return. Capital deployed includes fees on filled entries. Average capital utilization weights invested basis by time and divides by the original bankroll. Closed-position statistics use the lifetime net P&L of positions whose final exit occurs in the window, including positions carried in from before the start. The trade export also shows gross P&L before booked fees for each completed position. Partial exits remain part of their original position. The report shows open exposure and retains blocked exits in the portfolio.
+
+Expectancy is the arithmetic mean net P&L across all completed positions, including break-even positions. Profit factor divides total winning net P&L by the absolute value of total losing net P&L. It is undefined without losses. Win rate uses all completed positions as the denominator. The report shows mean wins and losses in dollars and percentage terms.
+
+Drawdown follows equity marks in time order and measures each decline from the running peak. Dollar and percentage maxima can occur at different times. Mark gaps retain the last known peak and make the observed maximum incomplete. If the terminal valuation is uncertain, terminal equity and portfolio return are unknown.
+
+Booked fees reconcile against the ledger and include charges on failed transactions. The execution audit can break those fees down by side and category. Price impact, quote movement and simulated latency describe the execution path. Price effects already embedded in fills are kept separate from booked fees. Missing cost evidence stays unknown.
+
+### Signals, segments and data quality
+
+The funnel links original signal features to risk decisions, simulated entry and eventual outcome as of the report cutoff. It separates failed entries, risk rejections, completed wins, losses and break-evens, open positions and blocked exits. Fixed bands summarize groups by entry conditions such as pool age, liquidity and recent activity, as well as by venue, holding time, sizing and execution cost. Unknown feature values stay in their own bucket.
+
+The report includes sample size, losing streaks, chronological splits, concentration of gains in the largest winners and how mean P&L changes when those winners are removed. These are descriptive diagnostics. The removal analysis leaves all other outcomes as recorded. Segments have no separate equity curves, and provider latency, market regime and confidence intervals are unavailable.
+
+Data quality considers source provenance, observed gaps, equity coverage, execution evidence, timing and unresolved exposures. Comparisons keep historical, replay and genuine forward observations separate and check policy and evidence compatibility before treating a comparison as comparable. Positive simulated results do not guarantee profitable real trading.
+
+### Frozen strategy and evaluation periods
+
+Each report records the strategy, paper configuration, risk and execution assumptions available for its source, with fingerprints tying them to the stored run. Use `--start` and `--end` for inclusive UTC cutoffs. An ISO date without a time selects midnight UTC. Evaluation types are `development`, `validation`, `holdout` and `forward`.
+
+Reserve a future validation or holdout window with `pnpm analytics:register --portfolio UUID --source forward --type holdout --start ISO --end ISO`, substituting the UUID and dates. A holdout requires a genuine forward portfolio and prospective registration against the frozen configuration. Read it after the window ends with `pnpm analytics:report --period UUID`, using the registration ID. The analytics CLI guards registered holdout windows against alternate selections. External access to stored data still requires operator discipline.
+
+### Verification and Week 10
+
+Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:integration` and `pnpm build`. The integration suite uses the isolated PostgreSQL test database. See the [Week 9 verification report](docs/week9-verification.md) for the measured fixture results and generated reports.
+
+Week 10 needs independently verifiable historical and forward observations before an empirical comparison is possible. That work includes transaction continuity and ordering, pool identity and creation time, contemporaneous USD conversion, and venue-specific depth and fee evidence. Once those inputs are available, the evaluation periods can be registered against a frozen strategy.
+
+## Week 10 — Jupiter Swap Integration and Execution Readiness
+
+The Swap V2 client issues `GET /swap/v2/order` for exact-input quote research. Quote-only mode omits the taker. A null transaction is normal in that mode. An empty transaction on a taker request is recorded separately as a build failure. The worker has no ability to sign or broadcast transactions. A successful quote or transaction simulation does not guarantee that a real transaction will execute at the quoted price. [Jupiter Swap V2 order reference](https://developers.jup.ag/docs/api-reference/swap/order)
+
+### Get a quote
+
+Apply the audit migration and explicitly enable the client for the command. This example requests a hypothetical quote for 0.01 SOL in USDC. It needs no wallet.
+
+```bash
+pnpm db:migrate
+
+JUPITER_SWAP_ENABLED=true pnpm swap:quote \
+  --input-mint So11111111111111111111111111111111111111112 \
+  --output-mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v \
+  --input-decimals 9 --output-decimals 6 --amount 0.01
+
+pnpm swap:readiness --assessment UUID
+```
+
+Use the assessment UUID returned by the quote command. The assessment preserves the decision at its recorded time and identifies an expired stored quote. A recorded pass requires fresh evidence for reuse. Standalone quote research can pass the quote checks while the overall assessment reports `SIGNAL_AND_PORTFOLIO_NOT_ASSESSED`.
+
+Use `--base-units` for a positive integer instead of `--amount` for a human-readable decimal. Amounts are validated against Solana's unsigned 64-bit limit and preserved as strings. The client validates known SOL and USDC decimals, supports mint precision from 0 to 255, and rejects inputs that require rounding. The exact quoted rate is also available as a numerator and denominator. Use wrapped SOL's mint to request SOL quotes. Other SPL and Token-2022 mints require a route and correct decimals. The standalone CLI accepts operator-supplied decimals for mints outside the built-in pair.
+
+The client defaults to the official Jupiter endpoint and accepts a loopback endpoint for offline fixtures. `JUPITER_API_KEY` supplies the `x-api-key` header to the official endpoint when configured. Keyless quote access is provider-dependent. The client spaces requests by at least two seconds per instance, applies `JUPITER_QUOTE_TIMEOUT_MS` to each attempt, respects rate-limit cooldowns and caps attempts at two. Concurrent CLI processes and the existing Token API client can share the provider's limit, so the per-instance rate is not an account-wide quota. Use `--exclude-router` to omit supported routers, or leave router selection to Jupiter. [Jupiter rate limits](https://developers.jup.ag/docs/portal/rate-limits)
+
+### Interpret fees, slippage and readiness
+
+The report keeps quoted output, minimum output, slippage tolerance and provider price impact separate. It validates the returned mints, input amount, route, minimum output, fee rate and adverse impact against policy. Defaults cap slippage and adverse impact at 500 bps each and the aggregate provider fee at 200 bps. The 15-second default application freshness window starts at request admission. The evaluator also checks a supplied RFQ expiry or block-height limit. Block-height verification uses the opt-in RPC client. Missing provider expiry remains unknown.
+
+Platform and aggregate fee fields can overlap and are not deducted again. Signature fees, priority fees and tips, and potentially recoverable rent are recorded separately in lamports with the provider's payer fields. USD estimates require contemporaneous rate evidence. Pool and transfer fee breakdowns may be incomplete. Quote-only network figures do not establish what a particular wallet would pay.
+
+The entry assessment reuses the existing paper risk checks for strategy version, fresh risk evidence, current eligibility, position limits and available cash. It checks pool identity, freshness, token program, decimals and allocation with estimated debits. A comparable pool observation permits a same-input Week 7 model comparison. Different routes and fee models can explain differences, and current quotes are never applied to historical backtests.
+
+The only current strategy candidates are fixtures. The entry assessment accepts them against a loopback quote service and reports that a live entry assessment is unsupported. Live quote research is available independently through `swap:quote`. Jupiter has no role in the existing paper fill path.
+
+### Inspect an unsigned transaction or run a diagnostic
+
+Unsigned preparation has a separate `JUPITER_UNSIGNED_BUILD_ENABLED` opt-in and requires `JUPITER_TAKER_PUBLIC_KEY`. The preparation pipeline rechecks the new quote and expiry before examining bytes. The Week 10 client requests v0 at most. Local inspection can also decode legacy messages. It checks the unsigned signature slot, fee payer, required signer, account roles, compute budget, program IDs and supported shared-route mint accounts. Lookup tables, sponsored payers, direct SOL or token instructions, unfamiliar programs and other unsupported formats are blocked.
+
+```bash
+JUPITER_TAKER_PUBLIC_KEY=PUBLIC_ADDRESS pnpm swap:inspect --file transaction.b64
+JUPITER_RPC_SIMULATION_ENABLED=true JUPITER_TAKER_PUBLIC_KEY=PUBLIC_ADDRESS \
+  pnpm swap:simulate --file transaction.b64
+```
+
+The file contains base64-encoded unsigned bytes. The simulation command uses `SOLANA_RPC_URL` with signature verification disabled and preserves the original blockhash. The RPC can fail if that blockhash has expired or the accounts lack usable state. It records the context slot, compute usage, available fee estimate, recognized program errors and a limited set of runtime log lines. A structurally recognized Jupiter shared route can receive a diagnostic simulation, but its CPI, token-account ownership and actual token movements remain unverified. Even a successful diagnostic leaves the prepared route unsupported. The local commands print diagnostics and do not persist transaction bytes. [Solana simulation reference](https://solana.com/docs/rpc/http/simulatetransaction)
+
+### Audit, tests and Week 11
+
+Migration `0013_swap_execution_assessments.sql` adds a separate append-only audit table. It stores a normalized quote or failure, request and evidence references, policy limits, fee estimates, comparison, preparation findings and any associated simulation. It omits raw provider bodies, transaction bytes and credentials. Use a stable `--request-id` to retrieve the same standalone observation. Entry assessments deduplicate by portfolio and signal. Concurrent processes can repeat the read-only request before the database selects the first immutable result. Quote and simulation work does not change orders, fills, or balances.
+
+Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:integration` and `pnpm build`. The offline integration test uses PostgreSQL and loopback Jupiter and RPC fixtures. See the [Week 10 verification report](docs/week10-verification.md) for observed results and remaining limits.
+
+Week 11 can validate genuine forward evidence, resolve lookup tables from a trusted RPC context, and verify token-account ownership, expected token debits and credits, and route instruction semantics before expanding diagnostic coverage. Any signing or broadcasting capability requires a separate authorized security milestone.
+
+## Week 11 — Operational Security and Monitoring
+
+The forward account holds the operational state, latest health evidence, owner identity and state version. The worker uses a dedicated PostgreSQL session lock for the account. Administrative changes and the final forward entry gate take the same row lock. Entries also require an owned session and health evidence for the execution frame. Existing isolated fixture backtests retain their research behavior.
+
+The normal lifecycle moves from `STARTING` through `RECOVERING` to `RUNNING` or `DEGRADED`. `RUNNING` requires a reconciled ledger, active risk status, fresh market observations, complete indicators and a supported executable quote. During `DEGRADED`, the worker can retain a candidate awaiting a quote, but it cannot create an entry order. `STOPPING` and `STOPPED` describe a clean shutdown. `PAUSED` and `HALTED` take precedence and persist across shutdown or restart.
+
+### Control a forward paper account
+
+```bash
+pnpm db:migrate
+pnpm solemn:status
+pnpm solemn:health
+pnpm solemn:incidents
+pnpm solemn:reconcile
+
+pnpm solemn:pause
+pnpm solemn:resume
+pnpm solemn:halt --reason "Incident reference"
+pnpm solemn:reset-halt --reason "Cause investigated and resolved"
+```
+
+Select a replay portfolio with `FORWARD_ACCOUNT` and the read-only collector with `FORWARD_MARKET_DATA_MODE=LIVE_READ_ONLY`. These local commands require access to the configured database. The pause, resume, halt and reset commands used by the Week 8 CLI share the same controller. Halt and reset require a short plain-text reason. Use an incident reference and keep credentials out of it.
+
+Pause and halt invalidate unsettled entry intents atomically. Open positions and eligible protective exits are preserved. A regular resume applies only to `PAUSED`. Reset requires an active PostgreSQL owner, fresh verified market and database health, reconciliation and resolved exposure. A verified reset enters `RECOVERING` and lets the worker re-evaluate readiness. The live read-only collector still lacks verified execution evidence. A completed replay has no active owner and cannot be resumed through a health bypass.
+
+### Risk, monitoring and recovery
+
+Daily risk uses the UTC boundary and the paper ledger's recorded starting equity for the day. Marked equity combines available and reserved cash with open-position marks. Realized P&L and booked fees affect cash. Stale or blocked positions make equity unsuitable for entry authorization. The existing risk manager compares drawdown with the recorded peak and enforces the configured allocation, position count, loss and drawdown rules. A reliable forward daily-loss breach and a recorded drawdown halt latch the operational kill switch. A new UTC day does not clear that latch. The explicit financial halt reset can establish a new equity baseline, and its history remains auditable.
+
+The health report includes the recorded feed status, observation timestamps, gaps, ownership, uptime, database compatibility probe, paper activity, equity and fees. The replay uses source timestamps for event freshness. Operator recovery also checks the age of the worker's wall-clock heartbeat. The live collector reports queue depth, provider errors and metered usage. The monitoring defaults use a 10-second database probe interval, an 80% queue threshold and a 15-second outage alert threshold. Price freshness reuses the forward market-data age setting.
+
+Reconciliation compares the immutable command and posting chain with the materialized portfolio, orders, fills and execution audits. It also checks pending replay exit quantities. A failed financial frame rolls back the frame, and a durable halt is recorded when PostgreSQL is reachable. If the owner session dies before it can record an incident, its stale recorded owner triggers a halt at the next startup. The worker restores existing positions and trailing state from the ledger.
+
+Operations records append-only UTC audit events and deduplicates alerts by open incident category. `solemn:incidents` displays the durable local alerts. Pino records runtime transitions and local failures. External notification delivery and Telegram are deferred. Repeated observations of an open incident do not create duplicate alerts.
+
+Solemn has no real-money trading path. A green health status shows which checks passed. It does not establish system safety or profitability. See the [runbooks](docs/operations/runbooks.md), [threat model](docs/security/threat-model.md), [future signing design](docs/security/future-signing.md) and [Week 11 verification](docs/week11-verification.md).
+
+Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:integration` and `pnpm build`. Week 12 can review database privilege separation, operator access, recovery from a database outage, audit retention, and the unsupported live execution evidence before considering any expansion of scope.
+
+## Week 12 — Paper-only release candidate
+
+The worktree targets `v0.1.0-rc.1`. It supports restricted local fixture replay, reconciliation, operational controls and quote research. Live trade admission still requires verified executable market evidence. Solemn has no signing or broadcasting capability.
+
+Use [the release environment example](config/release.env.example) and [deployment guide](docs/operations/deployment.md) for the safe local configuration. On a dedicated test database, `pnpm release:verify` runs the frozen install, full regression suites, build and deployment smoke. It records exit codes and logs under `reports/release/`. See the [readiness decision](docs/release/release-readiness.md), [release notes](docs/release/release-notes.md) and [rollback procedure](docs/operations/release-rollback.md).

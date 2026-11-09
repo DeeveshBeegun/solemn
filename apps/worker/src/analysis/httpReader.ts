@@ -49,11 +49,12 @@ export class HttpReader {
     url: string,
     init: RequestInit,
     signal: AbortSignal,
-  ): Promise<{ body: string; receivedAt: string }> {
+    acceptedErrorStatus?: number,
+  ): Promise<{ body: string; receivedAt: string; httpStatus: number }> {
     for (let attempt = 1; ; attempt++) {
       if (signal.aborted) throw failure('ABORTED');
       try {
-        return await this.attempt(url, init, signal);
+        return await this.attempt(url, init, signal, acceptedErrorStatus);
       } catch (error) {
         const details = providerError(error);
         if (
@@ -82,7 +83,8 @@ export class HttpReader {
     url: string,
     init: RequestInit,
     signal: AbortSignal,
-  ): Promise<{ body: string; receivedAt: string }> {
+    acceptedErrorStatus?: number,
+  ): Promise<{ body: string; receivedAt: string; httpStatus: number }> {
     if (this.pending >= 64) throw failure('CLIENT_BUSY');
     const previous = this.tail;
     let release: () => void = () => undefined;
@@ -137,7 +139,7 @@ export class HttpReader {
         await response.body?.cancel();
         throw failure('RATE_LIMITED', 429, new Date(resume).toISOString());
       }
-      if (!response.ok) {
+      if (!response.ok && response.status !== acceptedErrorStatus) {
         await response.body?.cancel();
         throw failure(
           [401, 403].includes(response.status)
@@ -163,7 +165,11 @@ export class HttpReader {
       const body = new TextDecoder('utf-8', { fatal: true }).decode(
         Buffer.concat(chunks),
       );
-      return { body, receivedAt: new Date(this.now()).toISOString() };
+      return {
+        body,
+        receivedAt: new Date(this.now()).toISOString(),
+        httpStatus: response.status,
+      };
     } catch (error) {
       if (signal.aborted) throw failure('ABORTED');
       if (controller.signal.aborted) throw failure('TIMEOUT');

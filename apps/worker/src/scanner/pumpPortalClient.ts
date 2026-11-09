@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
+import { mintAddressSchema } from '@solemn/shared';
 import type { ScannerGap } from '@solemn/shared';
 import type { Logger } from 'pino';
 import type { Config } from '../config/index.js';
@@ -71,6 +72,7 @@ export interface ClientHooks {
   gap(value: ScannerGap): void;
   reconnect(): void;
   canReconnect(): boolean;
+  rateLimited?(): void;
 }
 
 export class PumpPortalClient {
@@ -83,6 +85,8 @@ export class PumpPortalClient {
   private activeGap: ScannerGap | undefined;
   private readonly acknowledged = new Set<Subscription>();
   private readonly subscriptions: Subscription[];
+  private requestedTrades = new Set<string>();
+  private subscribedTrades = new Set<string>();
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private connectionTimer: ReturnType<typeof setTimeout> | undefined;
   private subscriptionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -183,9 +187,16 @@ export class PumpPortalClient {
     const generation = ++this.generation;
     const current = () => generation === this.generation;
     const url = new URL(this.config.PUMPPORTAL_WS_URL);
-    if (this.config.PUMPPORTAL_API_KEY)
+    url.searchParams.delete('api-key');
+    if (
+      this.config.FORWARD_PAPER_ENABLED &&
+      this.config.FORWARD_MARKET_DATA_MODE === 'LIVE_READ_ONLY' &&
+      this.config.ENABLE_METERED_MARKET_DATA &&
+      this.config.PUMPPORTAL_API_KEY
+    )
       url.searchParams.set('api-key', this.config.PUMPPORTAL_API_KEY);
     this.acknowledged.clear();
+    this.subscribedTrades.clear();
     this.disconnectReason = 'DISCONNECTED';
     const handlers: TransportHandlers = {
       open: () => {
@@ -240,6 +251,7 @@ export class PumpPortalClient {
         this.disconnect('CONNECTION_ERROR');
       },
       response: (status) => {
+        if (current() && status === 429) this.hooks.rateLimited?.();
         if (current())
           this.disconnect(
             status === 401 || status === 403
@@ -293,10 +305,51 @@ export class PumpPortalClient {
     if (this.acknowledged.size !== this.subscriptions.length) return;
     clearTimeout(this.subscriptionTimer);
     this.endGap();
+    this.syncTrades();
     clearTimeout(this.stableTimer);
     this.stableTimer = setTimeout(() => {
       this.retry = 0;
     }, this.config.SCANNER_STABLE_CONNECTION_MS);
+  }
+
+  watchTrades(mints: readonly string[]): void {
+    if (
+      mints.length &&
+      (!this.config.FORWARD_PAPER_ENABLED ||
+        this.config.FORWARD_MARKET_DATA_MODE !== 'LIVE_READ_ONLY' ||
+        !this.config.ENABLE_METERED_MARKET_DATA ||
+        !this.config.PUMPPORTAL_API_KEY)
+    )
+      throw new Error('Metered PumpPortal trade subscriptions are disabled');
+    if (mints.length > this.config.FORWARD_MAX_TRACKED_TOKENS)
+      throw new Error('Metered watchlist capacity exceeded');
+    this.requestedTrades = new Set(
+      mints.map((mint) => mintAddressSchema.parse(mint)),
+    );
+    this.syncTrades();
+  }
+  private syncTrades(): void {
+    if (!this.subscriptionsReady || !this.socket || this.halted || this.stopped)
+      return;
+    const removed = [...this.subscribedTrades].filter(
+      (m) => !this.requestedTrades.has(m),
+    );
+    const added = [...this.requestedTrades].filter(
+      (m) => !this.subscribedTrades.has(m),
+    );
+    try {
+      if (removed.length)
+        this.socket.send(
+          JSON.stringify({ method: 'unsubscribeTokenTrade', keys: removed }),
+        );
+      if (added.length)
+        this.socket.send(
+          JSON.stringify({ method: 'subscribeTokenTrade', keys: added }),
+        );
+      this.subscribedTrades = new Set(this.requestedTrades);
+    } catch {
+      this.disconnect('CONNECTION_ERROR');
+    }
   }
 
   disconnect(reason: GapReason, halt = false, gapStartedAt?: string): void {

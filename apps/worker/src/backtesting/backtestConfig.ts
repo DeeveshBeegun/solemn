@@ -39,6 +39,7 @@ export function createBacktestPlan(
     });
   const economic = {
     version: 'solemn-backtest-v1' as const,
+    ...(options.execution ? { execution: options.execution } : {}),
     datasetId: dataset.id,
     datasetFingerprint: dataset.fingerprint,
     sourceKind: dataset.manifest.sourceKind,

@@ -19,6 +19,8 @@ async function main() {
   try {
     const recovered = await recoverPortfolio(repository, portfolioId);
     if (action !== 'inspect') {
+      if (recovered.definition.dataMode !== 'FIXTURE')
+        throw new Error('Use the forward portfolio administrative commands');
       const reason = process.argv[4]?.replace(/^--reason=/, '');
       if (!reason)
         throw new Error('An explicit administrative reason is required');

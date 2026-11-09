@@ -15,6 +15,7 @@ export const createCounters = () => ({
   successfulWrites: 0,
   failedWrites: 0,
   reconnections: 0,
+  rateLimitEvents: 0,
   droppedEvents: 0,
 });
 export type ScannerCounters = ReturnType<typeof createCounters>;

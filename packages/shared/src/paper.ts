@@ -1,3 +1,10 @@
+import {
+  poolSnapshotSchema,
+  nativeUsdSchema,
+  executionContextSchema,
+  executionAuditSchema,
+  executionConfigSchema,
+} from './execution.js';
 import { z } from 'zod';
 import { toAtomic } from './financial.js';
 import {
@@ -123,6 +130,8 @@ export const executionObservationSchema = z
     source: z.string().min(1).max(128),
     sourceTradeId: idSchema.nullable(),
     dataMode: z.literal('FIXTURE'),
+    pool: poolSnapshotSchema.optional(),
+    nativeUsd: nativeUsdSchema.nullable().optional(),
     simulationOutcome: z
       .enum(['FULL_FILL', 'TRANSACTION_FAILURE', 'PARTIAL_FILL'])
       .default('FULL_FILL'),
@@ -184,6 +193,7 @@ export const paperPortfolioStateSchema = z.strictObject({
   haltReason: z.string().nullable(),
   entryBlockReasons: z.array(z.string()),
   positions: z.array(paperPositionSchema).max(1000),
+  executionUncertain: z.boolean().optional(),
 });
 export type PaperPortfolioState = z.infer<typeof paperPortfolioStateSchema>;
 export const paperAccountDefinitionSchema = z.strictObject({
@@ -191,7 +201,8 @@ export const paperAccountDefinitionSchema = z.strictObject({
   name: z.string().min(1).max(100),
   mode: z.literal('PAPER'),
   currency: z.literal('USD'),
-  dataMode: z.literal('FIXTURE'),
+  dataMode: z.enum(['FIXTURE', 'FORWARD_REPLAY', 'FORWARD_LIVE']),
+  forwardExecution: executionConfigSchema.optional(),
   strategyRunId: idSchema,
   replayHash: z.string().regex(/^[a-f0-9]{64}$/),
   createdAt: timestampSchema,
@@ -205,6 +216,7 @@ export type PaperAccountDefinition = z.infer<
 >;
 export const paperCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({
+    execution: executionContextSchema.optional(),
     type: z.literal('ENTRY'),
     id: idSchema,
     at: timestampSchema,
@@ -213,12 +225,19 @@ export const paperCommandSchema = z.discriminatedUnion('type', [
     observation: executionObservationSchema.nullable(),
   }),
   z.strictObject({
+    execution: executionContextSchema.optional(),
     type: z.literal('MARK'),
     id: idSchema,
     at: timestampSchema,
     observation: executionObservationSchema,
     risk: strategyRiskContextSchema.nullable(),
     deferExecution: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('FEED_UNAVAILABLE'),
+    id: idSchema,
+    at: timestampSchema,
+    reason: z.string().min(1).max(256),
   }),
   z.strictObject({
     type: z.literal('EXIT_UNAVAILABLE'),
@@ -248,6 +267,7 @@ export const paperCommandSchema = z.discriminatedUnion('type', [
 export type PaperCommand = z.infer<typeof paperCommandSchema>;
 export const paperPostingSchema = z.strictObject({
   type: z.enum([
+    'EXECUTION_FEE',
     'INITIAL_BALANCE',
     'RESERVE',
     'RELEASE',
@@ -262,6 +282,7 @@ export const paperPostingSchema = z.strictObject({
 });
 export type PaperPosting = z.infer<typeof paperPostingSchema>;
 export const paperOrderRecordSchema = z.strictObject({
+  audit: executionAuditSchema.optional(),
   order: orderSchema,
   trades: z.array(tradeSchema).max(1),
   request: orderRequestSchema,

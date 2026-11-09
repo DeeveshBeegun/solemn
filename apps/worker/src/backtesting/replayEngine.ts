@@ -1,4 +1,11 @@
 import {
+  buyQuantity,
+  latencyMs,
+  prepareQuote,
+} from '../execution/simulation/executionSimulator.js';
+import { executionMark } from '../execution/simulation/mark.js';
+import { fromAtomic, toAtomic } from '@solemn/shared';
+import {
   analyzeHistory,
   paperAccountDefinitionSchema,
   stableHash,
@@ -14,6 +21,9 @@ import type {
   ExecutionIntent,
   HistoricalEvent,
   HistoricalMarket,
+  ExecutionObservation,
+  PreparedQuote,
+  ExecutionContext,
   MarketCandle,
   MarketCoverage,
   PaperCommand,
@@ -174,6 +184,74 @@ export async function runBacktest(
   const entries = new Map<string, PendingEntry>(),
     exits = new Map<string, ExecutionIntent>();
   const now = () => clock.now().toISOString();
+  const latestPools = new Map<string, ExecutionObservation>();
+  const prepared = new Map<string, PreparedQuote>();
+  const attemptCounts = new Map<string, number>();
+  const unavailablePools = new Set<string>();
+  const captureQuote = (intent: ExecutionIntent) => {
+    if (!plan.execution || prepared.has(intent.id)) return;
+    const quoteAt = iso(
+      Date.parse(intent.triggerAt) +
+        plan.execution.latency.processingMs +
+        plan.execution.latency.quoteMs,
+    );
+    if (now() < quoteAt) return;
+    const observation = latestPools.get(scope(intent.mint, intent.poolAddress)),
+      pool = observation?.pool ?? null;
+    const position = state.positions.find((p) => p.id === intent.positionId);
+    const allocation =
+      (toAtomic(state.equityUsd) * toAtomic(plan.paper.maxPositionPercent)) /
+      toAtomic('100');
+    const budget = fromAtomic(
+      allocation < toAtomic(state.availableCashUsd)
+        ? allocation
+        : toAtomic(state.availableCashUsd),
+    );
+    const quantity =
+      intent.kind === 'ENTRY'
+        ? buyQuantity(pool, budget, plan.execution, plan.paper.quantityDecimals)
+        : (position?.pendingExitQuantity ?? position?.quantity);
+    const quote = prepareQuote(
+      pool,
+      intent.kind === 'ENTRY' ? 'BUY' : 'SELL',
+      quantity ?? '0.000000001',
+      intent.triggerAt,
+      quoteAt,
+      intent.dueAt,
+      plan.execution,
+    );
+    if (!quantity) quote.error = 'NO_EXECUTABLE_QUOTE_SIZE';
+    prepared.set(intent.id, quote);
+    logger?.debug(
+      {
+        runId: plan.runId,
+        scenarioId: plan.execution.scenario,
+        modelVersion: plan.execution.modelVersion,
+        signalId: intent.signalId,
+        mint: intent.mint,
+        poolSnapshotId: pool?.id,
+        quoteAt,
+        error: quote.error,
+      },
+      'Historical pool quote generated',
+    );
+  };
+  const executionContext = (
+    intent: ExecutionIntent,
+    observation: ExecutionObservation,
+  ): ExecutionContext | undefined => {
+    if (!plan.execution) return undefined;
+    const quote = prepared.get(intent.id);
+    if (!quote) throw new Error('Missing scheduled execution quote');
+    return {
+      runId: plan.runId,
+      config: plan.execution,
+      quote,
+      pool: observation.pool ?? null,
+      nativeUsd: observation.nativeUsd ?? null,
+      randomKey: `${intent.mint}:${intent.kind}:${intent.triggerAt}`,
+    };
+  };
   const commit = async (command: PaperCommand): Promise<PaperTransition> => {
     const before = state,
       expected = applyPaperCommand(before, command, definition);
@@ -208,6 +286,25 @@ export async function runBacktest(
     state = expected.state;
     material = true;
     analyzer.transition(command, expected);
+    for (const record of expected.orders)
+      if (record.audit)
+        logger?.debug(
+          {
+            runId: plan.runId,
+            scenarioId: record.audit.context.config.scenario,
+            orderId: record.order.id,
+            attemptId: record.audit.id,
+            mint: record.order.tokenMint,
+            modelVersion: record.audit.modelVersion,
+            quotePoolId: record.audit.context.quote.pool?.id,
+            landingPoolId: record.audit.context.pool?.id,
+            outcome: record.audit.outcome,
+            reason: record.audit.reason,
+            impactBps: record.audit.impactBps,
+            fees: record.audit.fees,
+          },
+          'Paper execution attempt simulated',
+        );
     logger?.debug(
       {
         runId: plan.runId,
@@ -239,8 +336,19 @@ export async function runBacktest(
       signalId,
       positionId,
       triggerAt: now(),
-      dueAt: iso(time + plan.executionLatencyMs),
-      expiresAt: iso(time + plan.executionLatencyMs + plan.executionWaitMs),
+      dueAt: iso(
+        time +
+          (plan.execution
+            ? latencyMs(plan.execution)
+            : plan.executionLatencyMs),
+      ),
+      expiresAt: iso(
+        time +
+          (plan.execution
+            ? latencyMs(plan.execution)
+            : plan.executionLatencyMs) +
+          plan.executionWaitMs,
+      ),
       reason,
       status: 'PENDING',
       attemptedAt: null,
@@ -257,6 +365,7 @@ export async function runBacktest(
     const position = state.positions.find((item) => item.id === positionId)!;
     const old = exits.get(positionId);
     if (old && old.reason === reason) return;
+    if (old) prepared.delete(old.id);
     if (old)
       await services.backtests.intent({
         ...old,
@@ -273,6 +382,7 @@ export async function runBacktest(
       position.id,
     );
     exits.set(position.id, intent);
+    captureQuote(intent);
     await services.backtests.intent(intent);
   };
   try {
@@ -352,7 +462,23 @@ export async function runBacktest(
         ...[...exits.values()].map((intent) => Date.parse(intent.expiresAt)),
         Infinity,
       );
+      const quoteTimer = plan.execution
+        ? Math.min(
+            ...[...entries.values()]
+              .map((e) => e.intent)
+              .concat([...exits.values()])
+              .filter((i) => !prepared.has(i.id))
+              .map(
+                (i) =>
+                  Date.parse(i.triggerAt) +
+                  plan.execution!.latency.processingMs +
+                  plan.execution!.latency.quoteMs,
+              ),
+            Infinity,
+          )
+        : Infinity;
       const time = Math.min(
+        quoteTimer,
         upcoming ? Date.parse(upcoming.availableAt) : Infinity,
         nextCandle,
         nextCadence,
@@ -385,7 +511,15 @@ export async function runBacktest(
         }
         if (event.kind === 'RISK' && newerRisk(event.data, context.risk))
           context.risk = event.data;
-        if (event.kind === 'EXECUTION') quotes.push(event);
+        if (event.kind === 'EXECUTION') {
+          quotes.push(event);
+          const old = latestPools.get(scope(event.mint, event.poolAddress));
+          if (
+            event.data.pool &&
+            (!old?.pool || event.data.pool.observedAt >= old.pool.observedAt)
+          )
+            latestPools.set(scope(event.mint, event.poolAddress), event.data);
+        }
         logger?.debug(
           {
             runId: plan.runId,
@@ -397,6 +531,43 @@ export async function runBacktest(
         );
         upcoming = await nextEvent();
       }
+      // Technical ID order never resolves conflicting same-time quotes with unknown source order.
+      const ambiguous = new Set<string>();
+      const groups = new Map<
+        string,
+        { value: string; completeOrder: boolean }
+      >();
+      for (const event of quotes) {
+        const key = `${event.mint}:${event.poolAddress}:${event.data.side}:${event.eventAt}`,
+          value = stableHash([
+            event.data.priceUsd,
+            event.data.liquidityUsd,
+            event.data.estimatedPriceImpactPercent,
+            ...(plan.execution
+              ? [
+                  event.data.pool ? { ...event.data.pool, id: null } : null,
+                  event.data.nativeUsd ?? null,
+                ]
+              : []),
+          ]);
+        const previous = groups.get(key),
+          completeOrder =
+            event.slot !== null && event.transactionIndex !== null;
+        if (
+          previous &&
+          previous.value !== value &&
+          (!previous.completeOrder || !completeOrder)
+        )
+          ambiguous.add(key);
+        groups.set(key, { value, completeOrder });
+      }
+      for (const event of quotes)
+        if (
+          ambiguous.has(
+            `${event.mint}:${event.poolAddress}:${event.data.side}:${event.eventAt}`,
+          )
+        )
+          latestPools.delete(scope(event.mint, event.poolAddress));
       if (time === nextCandle) {
         const candleEnd = time - plan.strategy.allowedLatenessMs;
         for (const context of markets.values()) {
@@ -475,6 +646,7 @@ export async function runBacktest(
             if (entries.size >= baseConfig.MARKET_DATA_MAX_TRACKED_TOKENS * 2)
               throw new Error('Backtest pending entry capacity exceeded');
             entries.set(candidate.id, { candidate, intent });
+            captureQuote(intent);
             await services.backtests.intent(intent);
             logger?.info(
               {
@@ -494,30 +666,8 @@ export async function runBacktest(
         }
         nextCandle += 60000;
       }
-      // Technical ID order never resolves conflicting same-time quotes with unknown source order.
-      const ambiguous = new Set<string>();
-      const groups = new Map<
-        string,
-        { value: string; completeOrder: boolean }
-      >();
-      for (const event of quotes) {
-        const key = `${event.mint}:${event.poolAddress}:${event.data.side}:${event.eventAt}`,
-          value = stableHash([
-            event.data.priceUsd,
-            event.data.liquidityUsd,
-            event.data.estimatedPriceImpactPercent,
-          ]);
-        const previous = groups.get(key),
-          completeOrder =
-            event.slot !== null && event.transactionIndex !== null;
-        if (
-          previous &&
-          previous.value !== value &&
-          (!previous.completeOrder || !completeOrder)
-        )
-          ambiguous.add(key);
-        groups.set(key, { value, completeOrder });
-      }
+      for (const entry of entries.values()) captureQuote(entry.intent);
+      for (const intent of exits.values()) captureQuote(intent);
       for (const event of quotes) {
         const context = markets.get(scope(event.mint, event.poolAddress))!,
           raw = event.data;
@@ -562,6 +712,9 @@ export async function runBacktest(
               candidate: pending.candidate,
               risk: context.risk,
               observation,
+              ...(plan.execution
+                ? { execution: executionContext(intent, observation)! }
+                : {}),
             };
             const transition = await commit(command);
             await services.backtests.intent({
@@ -576,6 +729,7 @@ export async function runBacktest(
               reasons: transition.result.reasons,
             });
             entries.delete(key);
+            prepared.delete(intent.id);
           }
         } else {
           const position = state.positions.find(
@@ -585,8 +739,20 @@ export async function runBacktest(
               item.status !== 'CLOSED',
           );
           if (!position) continue;
+          // A newly executable route starts a fresh bounded retry window after a documented outage.
+          if (plan.execution) {
+            const executable =
+              executionMark(observation, position.quantity, plan.execution) !==
+              null;
+            if (!executable) unavailablePools.add(position.id);
+            else if (unavailablePools.delete(position.id))
+              attemptCounts.set(position.id, 0);
+          }
           const pending = exits.get(position.id),
-            price = executionPrice(observation, plan.paper),
+            price = plan.execution
+              ? (executionMark(observation, position.quantity, plan.execution)
+                  ?.priceUsd ?? observation.priceUsd)
+              : executionPrice(observation, plan.paper),
             problem = observationProblem(
               observation,
               plan.paper,
@@ -604,6 +770,10 @@ export async function runBacktest(
               : null;
           const canExecute =
             !!pending &&
+            !state.executionUncertain &&
+            (attemptCounts.get(position.id) ?? 0) <
+              (plan.execution?.maxAttemptsPerPosition ??
+                Number.MAX_SAFE_INTEGER) &&
             !problem &&
             predicted?.reason === pending.reason &&
             time >= Date.parse(pending.dueAt) &&
@@ -617,6 +787,29 @@ export async function runBacktest(
             observation,
             risk: context.risk,
             deferExecution: !canExecute,
+            ...(plan.execution
+              ? {
+                  execution:
+                    canExecute && pending
+                      ? executionContext(pending, observation)!
+                      : {
+                          runId: plan.runId,
+                          config: plan.execution,
+                          quote: prepareQuote(
+                            observation.pool ?? null,
+                            'SELL',
+                            position.quantity,
+                            now(),
+                            now(),
+                            now(),
+                            plan.execution,
+                          ),
+                          pool: observation.pool ?? null,
+                          nativeUsd: observation.nativeUsd ?? null,
+                          randomKey: `mark:${event.id}`,
+                        },
+                }
+              : {}),
           };
           const transition = await commit(command);
           if (transition.result.outcome === 'EXIT_SCHEDULED')
@@ -643,10 +836,22 @@ export async function runBacktest(
               reasons: transition.result.reasons,
             });
             exits.delete(position.id);
+            prepared.delete(pending.id);
+            attemptCounts.set(
+              position.id,
+              (attemptCounts.get(position.id) ?? 0) + 1,
+            );
             const remaining = state.positions.find(
               (item) => item.id === position.id,
             )!;
-            if (remaining.status !== 'CLOSED' && remaining.pendingExitReason)
+            if (
+              remaining.status !== 'CLOSED' &&
+              remaining.pendingExitReason &&
+              !state.executionUncertain &&
+              (attemptCounts.get(position.id) ?? 0) <
+                (plan.execution?.maxAttemptsPerPosition ??
+                  Number.MAX_SAFE_INTEGER)
+            )
               await scheduleExit(
                 position.id,
                 `retry:${event.id}`,
@@ -679,6 +884,7 @@ export async function runBacktest(
             reasons: ['NO_VALID_EXECUTION_OBSERVATION'],
           });
           entries.delete(key);
+          prepared.delete(pending.intent.id);
           analyzer.missingExecution++;
           analyzer.unavailable++;
         }
@@ -698,6 +904,7 @@ export async function runBacktest(
             reasons: ['NO_VALID_EXECUTION_OBSERVATION'],
           });
           exits.delete(key);
+          prepared.delete(intent.id);
           analyzer.unavailable++;
         }
       const cadence = time === nextCadence;
@@ -748,8 +955,17 @@ export async function runBacktest(
       signals: analyzer.signals,
       limitations: [
         ...provider.dataset.quality.limitations,
-        'Percentage fees/slippage and execution latency are research assumptions, not verified Solana execution costs.',
-        'No pool-depth, priority-fee, network failure-fee or survivorship correction model is implemented.',
+        ...(plan.execution
+          ? [
+              'Reference CPMM, latency and failure parameters are research assumptions, not verified venue fills.',
+              'Historical pool observations reset the counterfactual reserve anchor; simulated fills do not modify the exogenous market tape.',
+              'Nonzero recoverable rent is explicitly unsupported; no rent is charged as a trading fee.',
+              'Current operational history has no verified pool reserves. Fixture results are synthetic.',
+            ]
+          : [
+              'Percentage fees/slippage and execution latency are research assumptions, not verified Solana execution costs.',
+              'No pool-depth, priority-fee, network failure-fee or survivorship correction model is implemented.',
+            ]),
         'Unknown open-position valuations remain null; maximum drawdown over reliable snapshots can understate the full-period drawdown.',
       ],
     };

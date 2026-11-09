@@ -40,6 +40,7 @@ export const scannerGapSchema = z
       'INVALID_MESSAGE',
       'SHUTDOWN',
       'RETRY_LIMIT',
+      'METERED_BUDGET_EXHAUSTED',
     ]),
   })
   .refine(

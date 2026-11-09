@@ -9,3 +9,5 @@ export * from './strategyRepository.js';
 export * from './paperRepository.js';
 export * from './historyRepository.js';
 export * from './backtestRepository.js';
+export * from './swapAuditRepository.js';
+export * from './forwardOwnership.js';

@@ -84,7 +84,12 @@ describe('PostgreSQL persistence (transaction-rolled-back fixtures)', () => {
     const row = await createRepository(db).insertToken(token);
     expect(row?.mintAddress).toBe(token.mintAddress);
     expect(row?.poolAddress).toBeNull();
-    expect(await db.select().from(tokens)).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(tokens)
+        .where(eq(tokens.mintAddress, token.mintAddress)),
+    ).toHaveLength(1);
   });
   it('inserts events, preserves raw data, and keeps large slots exact', async () => {
     const repository = createRepository(db);
@@ -108,7 +113,10 @@ describe('PostgreSQL persistence (transaction-rolled-back fixtures)', () => {
       id: id(21),
       sourceEventId: 'fixture-tx:0:1',
     });
-    const rows = await db.select().from(marketEvents);
+    const rows = await db
+      .select()
+      .from(marketEvents)
+      .where(eq(marketEvents.tokenMint, token.mintAddress));
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === event.id)?.rawPayload).toEqual(
       event.rawPayload,
@@ -138,7 +146,9 @@ describe('PostgreSQL persistence (transaction-rolled-back fixtures)', () => {
     const row = await repository.insertTrade(trade);
     expect(row?.executedQuantity).toBe('0.3');
     expect(row?.executionPriceUsd).toBe('0.1');
-    expect(await db.select().from(trades)).toHaveLength(1);
+    expect(
+      await db.select().from(trades).where(eq(trades.orderId, order.id)),
+    ).toHaveLength(1);
   });
   it('persists snapshots, signals, and signed position P&L', async () => {
     await createRepository(db).insertToken(token);
@@ -159,12 +169,22 @@ describe('PostgreSQL persistence (transaction-rolled-back fixtures)', () => {
       openedAt: order.createdAt,
       closedAt: null,
     });
-    expect((await db.select().from(positions))[0]?.realizedPnlUsd).toBe(
-      '-0.01',
-    );
-    expect((await db.select().from(tradingSignals))[0]?.riskAssessment).toEqual(
-      signal.riskAssessment,
-    );
+    expect(
+      (
+        await db
+          .select()
+          .from(positions)
+          .where(eq(positions.id, id(30)))
+      )[0]?.realizedPnlUsd,
+    ).toBe('-0.01');
+    expect(
+      (
+        await db
+          .select()
+          .from(tradingSignals)
+          .where(eq(tradingSignals.id, signal.id))
+      )[0]?.riskAssessment,
+    ).toEqual(signal.riskAssessment);
   });
   it('rejects orders referencing unknown tokens', async () => {
     await expect(createRepository(db).insertOrder(order)).rejects.toMatchObject(

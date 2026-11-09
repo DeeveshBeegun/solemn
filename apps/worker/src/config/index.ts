@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  assertNoExecutionCapabilities,
+  assertPaperMode,
+} from '../security/securityPolicy.js';
+import {
+  mintAddressSchema,
   percentageSchema,
   positiveDecimalSchema,
   paperPolicySchema,
@@ -45,6 +50,48 @@ const protocolUrl = (protocols: string[]) =>
       return false;
     }
   }, 'Unsupported URL protocol');
+export const jupiterTokensBaseUrlSchema = z.url().refine((value) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    ['/tokens/v2', '/tokens/v2/'].includes(url.pathname) &&
+    (url.origin === 'https://api.jup.ag' ||
+      (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+        ['http:', 'https:'].includes(url.protocol)))
+  );
+}, 'Expected the Jupiter Tokens V2 endpoint or a loopback mock');
+export const jupiterSwapBaseUrlSchema = z.url().refine((value) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    url.pathname === '/swap/v2' &&
+    (url.origin === 'https://api.jup.ag' ||
+      (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+        ['http:', 'https:'].includes(url.protocol)))
+  );
+}, 'Expected the Jupiter Swap V2 endpoint or a loopback mock');
+export function isReadOnlyRpcUrl(url: URL): boolean {
+  const host = url.hostname.replace(/\.$/, '');
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(host);
+  return (
+    !url.username &&
+    !url.password &&
+    !url.hash &&
+    host !== 'jup.ag' &&
+    !host.endsWith('.jup.ag') &&
+    host !== 'pumpportal.fun' &&
+    !host.endsWith('.pumpportal.fun') &&
+    (url.protocol === 'https:' || (loopback && url.protocol === 'http:'))
+  );
+}
 export const configSchema = z
   .object({
     NODE_ENV: z
@@ -54,9 +101,13 @@ export const configSchema = z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
     DATABASE_URL: protocolUrl(['postgres:', 'postgresql:']),
-    SOLANA_RPC_URL: protocolUrl(['http:', 'https:']).default(
-      'https://api.mainnet-beta.solana.com',
-    ),
+    SOLANA_RPC_URL: z
+      .url()
+      .refine(
+        (value) => URL.canParse(value) && isReadOnlyRpcUrl(new URL(value)),
+        'Expected an HTTPS read-only RPC or loopback mock endpoint',
+      )
+      .default('https://api.mainnet-beta.solana.com'),
     SOLANA_WS_URL: protocolUrl(['ws:', 'wss:']).default(
       'wss://api.mainnet-beta.solana.com',
     ),
@@ -87,10 +138,25 @@ export const configSchema = z
     SCANNER_METRICS_INTERVAL_MS: integerSetting('30000', 100, 300000),
     SCANNER_MAX_MESSAGE_BYTES: integerSetting('65536', 128, 1048576),
     TOKEN_RISK_ANALYSIS_ENABLED: booleanSetting('false'),
-    JUPITER_TOKENS_BASE_URL: protocolUrl(['https:', 'http:']).default(
+    JUPITER_TOKENS_BASE_URL: jupiterTokensBaseUrlSchema.default(
       'https://api.jup.ag/tokens/v2',
     ),
     JUPITER_API_KEY: z.string().trim().max(4096).default(''),
+    JUPITER_SWAP_ENABLED: booleanSetting('false'),
+    JUPITER_SWAP_BASE_URL: jupiterSwapBaseUrlSchema.default(
+      'https://api.jup.ag/swap/v2',
+    ),
+    JUPITER_QUOTE_TIMEOUT_MS: integerSetting('5000', 10, 30000),
+    JUPITER_MAX_QUOTE_AGE_MS: integerSetting('15000', 1, 60000),
+    JUPITER_SWAP_REQUEST_INTERVAL_MS: integerSetting('2000', 2000, 60000),
+    JUPITER_UNSIGNED_BUILD_ENABLED: booleanSetting('false'),
+    JUPITER_RPC_SIMULATION_ENABLED: booleanSetting('false'),
+    JUPITER_TAKER_PUBLIC_KEY: z
+      .union([mintAddressSchema, z.literal('')])
+      .default(''),
+    JUPITER_MAX_SLIPPAGE_BPS: integerSetting('500', 0, 9999),
+    JUPITER_MAX_PRICE_IMPACT_BPS: integerSetting('500', 0, 10000),
+    JUPITER_MAX_FEE_BPS: integerSetting('200', 0, 10000),
     JUPITER_REQUEST_INTERVAL_MS: integerSetting('2000', 1, 60000),
     JUPITER_CACHE_TTL_MS: integerSetting('30000', 0, 300000),
     JUPITER_CACHE_MAX_ENTRIES: integerSetting('1000', 1, 10000),
@@ -115,6 +181,22 @@ export const configSchema = z
     RISK_RPC_REQUEST_INTERVAL_MS: integerSetting('1000', 1, 60000),
     RISK_JOB_LEASE_MS: integerSetting('300000', 1000, 3600000),
     RISK_SHUTDOWN_TIMEOUT_MS: integerSetting('15000', 10, 120000),
+    OPERATIONS_HEALTH_CHECK_INTERVAL_SECONDS: integerSetting('10', 1, 60),
+    OPERATIONS_OUTAGE_ALERT_SECONDS: integerSetting('15', 1, 300),
+    OPERATIONS_MAX_QUEUE_UTILIZATION_PERCENT: integerSetting('80', 1, 100),
+    FORWARD_PAPER_ENABLED: booleanSetting('false'),
+    FORWARD_MARKET_DATA_MODE: z
+      .enum(['REPLAY', 'LIVE_READ_ONLY'])
+      .default('REPLAY'),
+    FORWARD_ACCOUNT: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,50}$/)
+      .default('week8'),
+    ENABLE_METERED_MARKET_DATA: booleanSetting('false'),
+    FORWARD_MAX_TRACKED_TOKENS: integerSetting('10', 1, 100),
+    FORWARD_MAX_MARKET_DATA_AGE_SECONDS: integerSetting('15', 1, 300),
+    FORWARD_DAILY_EVENT_BUDGET: integerSetting('10000', 1, 1000000),
+    FORWARD_EQUITY_SNAPSHOT_INTERVAL_SECONDS: integerSetting('60', 1, 600),
     PAPER_TRADING_ENABLED: booleanSetting('false'),
     PAPER_ALLOW_FIXTURE_SIGNALS: booleanSetting('false'),
     PAPER_REPLAY_PATH: z.string().max(4096).default(''),
@@ -211,6 +293,34 @@ export const configSchema = z
     const issue = (path: string, message: string) =>
       context.addIssue({ code: 'custom', path: [path], message });
     if (
+      config.JUPITER_UNSIGNED_BUILD_ENABLED &&
+      (!config.JUPITER_SWAP_ENABLED || !config.JUPITER_TAKER_PUBLIC_KEY)
+    )
+      issue(
+        'JUPITER_UNSIGNED_BUILD_ENABLED',
+        'Unsigned preparation requires swap opt-in and a public taker',
+      );
+    if (
+      config.FORWARD_PAPER_ENABLED &&
+      (config.PAPER_TRADING_ENABLED ||
+        config.STRATEGY_ENABLED ||
+        config.SCANNER_ENABLED)
+    )
+      issue(
+        'FORWARD_PAPER_ENABLED',
+        'Forward owns its strategy and scanner lifecycle. Disable the standalone paper, strategy and scanner services.',
+      );
+    if (
+      config.ENABLE_METERED_MARKET_DATA &&
+      (!config.FORWARD_PAPER_ENABLED ||
+        config.FORWARD_MARKET_DATA_MODE !== 'LIVE_READ_ONLY' ||
+        !config.PUMPPORTAL_API_KEY)
+    )
+      issue(
+        'ENABLE_METERED_MARKET_DATA',
+        'Metered data requires enabled live read-only forward mode and PUMPPORTAL_API_KEY',
+      );
+    if (
       config.STRATEGY_MAX_POOL_AGE_MINUTES <
       config.STRATEGY_MIN_POOL_AGE_MINUTES
     )
@@ -235,17 +345,6 @@ export const configSchema = z
         const local = ['localhost', '127.0.0.1', '[::1]'].includes(
           url.hostname,
         );
-        if (
-          config.TOKEN_RISK_ANALYSIS_ENABLED &&
-          !local &&
-          url.protocol !== 'https:'
-        )
-          issue(field, 'External risk providers require HTTPS');
-        if (
-          field === 'JUPITER_TOKENS_BASE_URL' &&
-          (url.search || url.hash || url.username || url.password)
-        )
-          issue(field, 'Use a base URL without credentials, query or fragment');
         if (
           field === 'JUPITER_TOKENS_BASE_URL' &&
           !local &&
@@ -297,6 +396,7 @@ export type Config = z.infer<typeof configSchema>;
 export function loadConfig(
   environment: Record<string, string | undefined> = process.env,
 ): Config {
+  assertNoExecutionCapabilities(environment);
   const parsed = configSchema.safeParse(environment);
   if (!parsed.success) {
     // Only field names and fixed validator messages; never include received values.
@@ -304,5 +404,6 @@ export function loadConfig(
       `Invalid Solemn configuration: ${parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
     );
   }
+  assertPaperMode(parsed.data);
   return parsed.data;
 }

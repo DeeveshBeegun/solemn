@@ -9,3 +9,4 @@ export * from './market.js';
 export * from './paper.js';
 export * from './backtest.js';
 export * from './historyQuality.js';
+export * from './execution.js';

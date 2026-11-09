@@ -11,6 +11,7 @@ import { createScannerService } from './scanner/scannerService.js';
 import { createRiskAnalysisService } from './analysis/riskAnalysisService.js';
 import { createPaperTradingService } from './portfolio/paperTradingService.js';
 import { createStrategyService } from './strategy/strategyService.js';
+import { runForwardCommand } from './forward/forwardTradingService.js';
 
 loadDotEnv({ quiet: true });
 const bootstrapLogger = createLogger('info');
@@ -27,6 +28,10 @@ async function main(): Promise<void> {
     return;
   }
   const logger = createLogger(config.LOG_LEVEL);
+  if (config.FORWARD_PAPER_ENABLED) {
+    await runForwardCommand(config, logger);
+    return;
+  }
   const database = createDatabase(config.DATABASE_URL, (error) => {
     logger.error(safeError(error), 'Unexpected PostgreSQL pool error');
     process.exitCode = 1;

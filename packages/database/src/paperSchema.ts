@@ -47,7 +47,7 @@ export const paperPortfolios = pgTable(
   (t) => [
     check(
       'paper_portfolio_modes',
-      sql`${t.mode} = 'PAPER' AND ${t.dataMode} = 'FIXTURE'`,
+      sql`${t.mode} = 'PAPER' AND ${t.dataMode} IN ('FIXTURE','FORWARD_REPLAY','FORWARD_LIVE')`,
     ),
     check(
       'paper_portfolio_cash',

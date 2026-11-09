@@ -1,4 +1,5 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { executionSimulationAttempts } from './executionSchema.js';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import {
   paperAccountDefinitionSchema,
   paperCommandSchema,
@@ -17,6 +18,8 @@ import type {
   PaperTransition,
 } from '@solemn/shared';
 import type { Database } from './client.js';
+import { forwardAccounts } from './forwardSchema.js';
+import { forwardOwnerPid } from './forwardOwnership.js';
 import { orders, positions, tokens, trades } from './schema.js';
 import { strategyDecisions, strategyRuns } from './strategySchema.js';
 import { paperPortfolios, portfolioBalanceEvents } from './paperSchema.js';
@@ -24,7 +27,10 @@ export interface PaperCommit extends PaperTransition {
   duplicate: boolean;
 }
 export interface PaperRepository {
-  snapshot(portfolioId: string): Promise<{
+  snapshot(
+    portfolioId: string,
+    options?: { readOnly?: boolean; maxEvents?: number },
+  ): Promise<{
     definition: PaperAccountDefinition;
     state: PaperPortfolioState;
     events: (typeof portfolioBalanceEvents.$inferSelect)[];
@@ -60,125 +66,163 @@ const balances = (state: PaperPortfolioState) => ({
 });
 export function createPaperRepository(db: Database): PaperRepository {
   return {
-    async snapshot(portfolioId) {
-      return db.transaction(async (tx) => {
-        const row = (
-          await tx
+    async snapshot(portfolioId, options) {
+      return db.transaction(
+        async (tx) => {
+          const query = tx
             .select()
             .from(paperPortfolios)
-            .where(eq(paperPortfolios.id, portfolioId))
-            .for('update')
-        )[0];
-        if (!row) throw new Error('Unknown paper portfolio');
-        const definition = paperAccountDefinitionSchema.parse(row.definition),
-          state = paperPortfolioStateSchema.parse(row.state);
-        const events = await tx
-          .select()
-          .from(portfolioBalanceEvents)
-          .where(eq(portfolioBalanceEvents.portfolioId, portfolioId))
-          .orderBy(asc(portfolioBalanceEvents.sequence));
-        if (
-          events.length !== row.version ||
-          events.at(-1)?.eventHash !== row.lastEventHash
-        )
-          throw new Error('Portfolio journal version mismatch');
-        const storedPositions = await tx
-          .select()
-          .from(positions)
-          .where(eq(positions.portfolioId, portfolioId));
-        const storedOrders = await tx
-          .select()
-          .from(orders)
-          .where(eq(orders.portfolioId, portfolioId));
-        const storedTrades = await tx
-          .select()
-          .from(trades)
-          .where(eq(trades.portfolioId, portfolioId));
-        const expectedOrders = events.flatMap((event) => event.orders),
-          expectedTrades = expectedOrders.flatMap((record) => record.trades);
-        if (
-          storedPositions.length !== state.positions.length ||
-          storedOrders.length !== expectedOrders.length ||
-          storedTrades.length !== expectedTrades.length
-        )
-          throw new Error('Paper materialized record count mismatch');
-        const atomic = (value: string) =>
-          value.startsWith('-') ? -toAtomic(value.slice(1)) : toAtomic(value);
-        const moneyMatches = (
-          actual: string | null,
-          expected: string | null,
-        ) =>
-          actual === null || expected === null
-            ? actual === expected
-            : atomic(actual) === atomic(expected);
-        const timeMatches = (actual: string | null, expected: string | null) =>
-          actual === null || expected === null
-            ? actual === expected
-            : Date.parse(actual) === Date.parse(expected);
-        for (const position of state.positions) {
-          const stored = storedPositions.find(
-            (item) => item.id === position.id,
+            .where(eq(paperPortfolios.id, portfolioId));
+          const row = (
+            await (options?.readOnly ? query : query.for('update'))
+          )[0];
+          if (!row) throw new Error('Unknown paper portfolio');
+          if (
+            options?.maxEvents !== undefined &&
+            row.version > options.maxEvents
+          )
+            throw new Error('Portfolio journal exceeds snapshot capacity');
+          const definition = paperAccountDefinitionSchema.parse(row.definition),
+            state = paperPortfolioStateSchema.parse(row.state);
+          const events = await tx
+            .select()
+            .from(portfolioBalanceEvents)
+            .where(eq(portfolioBalanceEvents.portfolioId, portfolioId))
+            .orderBy(asc(portfolioBalanceEvents.sequence));
+          if (
+            events.length !== row.version ||
+            events.at(-1)?.eventHash !== row.lastEventHash
+          )
+            throw new Error('Portfolio journal version mismatch');
+          const storedPositions = await tx
+            .select()
+            .from(positions)
+            .where(eq(positions.portfolioId, portfolioId));
+          const storedOrders = await tx
+            .select()
+            .from(orders)
+            .where(eq(orders.portfolioId, portfolioId));
+          const storedTrades = await tx
+            .select()
+            .from(trades)
+            .where(eq(trades.portfolioId, portfolioId));
+          const storedAttempts = await tx
+            .select()
+            .from(executionSimulationAttempts)
+            .where(eq(executionSimulationAttempts.portfolioId, portfolioId));
+          const expectedAttempts = events.flatMap((event) =>
+            event.orders.flatMap((order) => (order.audit ? [order.audit] : [])),
           );
+          const attemptsById = new Map(storedAttempts.map((a) => [a.id, a]));
           if (
-            !stored ||
-            stored.tokenMint !== position.mint ||
-            stored.poolAddress !== position.poolAddress ||
-            stored.paperState !== position.status ||
-            stored.status !==
-              (position.status === 'CLOSED' ? 'CLOSED' : 'OPEN') ||
-            stableHash(stored.paperDetails) !== stableHash(position) ||
-            !moneyMatches(stored.quantity, position.quantity) ||
-            !moneyMatches(stored.costBasisUsd, position.costBasisUsd) ||
-            !moneyMatches(
-              stored.averageEntryPriceUsd,
-              position.entryPriceUsd,
-            ) ||
-            !moneyMatches(stored.realizedPnlUsd, position.realizedPnlUsd) ||
-            !moneyMatches(stored.unrealizedPnlUsd, position.unrealizedPnlUsd) ||
-            !timeMatches(stored.openedAt, position.openedAt) ||
-            !timeMatches(stored.closedAt, position.closedAt)
+            storedAttempts.length !== expectedAttempts.length ||
+            expectedAttempts.some((a) => {
+              const stored = attemptsById.get(a.id);
+              return !stored || stableHash(stored.payload) !== stableHash(a);
+            })
           )
-            throw new Error('Paper position materialization mismatch');
-        }
-        for (const expected of expectedOrders) {
-          const stored = storedOrders.find(
-              (item) => item.id === expected.order.id,
-            ),
-            order = expected.order;
+            throw new Error('Execution audit materialization mismatch');
+          const expectedOrders = events.flatMap((event) => event.orders),
+            expectedTrades = expectedOrders.flatMap((record) => record.trades);
           if (
-            !stored ||
-            stableHash(stored.paperDetails) !== stableHash(expected) ||
-            stored.status !== order.status ||
-            stored.executionMode !== 'PAPER' ||
-            stored.tokenMint !== order.tokenMint ||
-            stored.side !== order.side ||
-            !moneyMatches(stored.requestedQuantity, order.requestedQuantity) ||
-            !moneyMatches(stored.estimatedFeesUsd, order.estimatedFeesUsd) ||
-            !moneyMatches(stored.actualFeesUsd, order.actualFeesUsd) ||
-            !timeMatches(stored.createdAt, order.createdAt) ||
-            !timeMatches(stored.submittedAt, order.submittedAt) ||
-            !timeMatches(stored.executedAt, order.executedAt)
+            storedPositions.length !== state.positions.length ||
+            storedOrders.length !== expectedOrders.length ||
+            storedTrades.length !== expectedTrades.length
           )
-            throw new Error('Paper order materialization mismatch');
-          for (const fill of expected.trades) {
-            const trade = storedTrades.find((item) => item.id === fill.id);
+            throw new Error('Paper materialized record count mismatch');
+          const atomic = (value: string) =>
+            value.startsWith('-') ? -toAtomic(value.slice(1)) : toAtomic(value);
+          const moneyMatches = (
+            actual: string | null,
+            expected: string | null,
+          ) =>
+            actual === null || expected === null
+              ? actual === expected
+              : atomic(actual) === atomic(expected);
+          const timeMatches = (
+            actual: string | null,
+            expected: string | null,
+          ) =>
+            actual === null || expected === null
+              ? actual === expected
+              : Date.parse(actual) === Date.parse(expected);
+          for (const position of state.positions) {
+            const stored = storedPositions.find(
+              (item) => item.id === position.id,
+            );
             if (
-              !trade ||
-              trade.orderId !== fill.orderId ||
-              trade.tokenMint !== fill.tokenMint ||
-              trade.side !== fill.side ||
-              trade.positionId !== expected.positionId ||
-              !moneyMatches(trade.executedQuantity, fill.executedQuantity) ||
-              !moneyMatches(trade.executionPriceUsd, fill.executionPriceUsd) ||
-              !moneyMatches(trade.feesUsd, fill.feesUsd) ||
-              !moneyMatches(trade.notionalUsd, expected.notionalUsd) ||
-              !timeMatches(trade.timestamp, fill.timestamp)
+              !stored ||
+              stored.tokenMint !== position.mint ||
+              stored.poolAddress !== position.poolAddress ||
+              stored.paperState !== position.status ||
+              stored.status !==
+                (position.status === 'CLOSED' ? 'CLOSED' : 'OPEN') ||
+              stableHash(stored.paperDetails) !== stableHash(position) ||
+              !moneyMatches(stored.quantity, position.quantity) ||
+              !moneyMatches(stored.costBasisUsd, position.costBasisUsd) ||
+              !moneyMatches(
+                stored.averageEntryPriceUsd,
+                position.entryPriceUsd,
+              ) ||
+              !moneyMatches(stored.realizedPnlUsd, position.realizedPnlUsd) ||
+              !moneyMatches(
+                stored.unrealizedPnlUsd,
+                position.unrealizedPnlUsd,
+              ) ||
+              !timeMatches(stored.openedAt, position.openedAt) ||
+              !timeMatches(stored.closedAt, position.closedAt)
             )
-              throw new Error('Paper fill materialization mismatch');
+              throw new Error('Paper position materialization mismatch');
           }
-        }
-        return { definition, state, events };
-      });
+          for (const expected of expectedOrders) {
+            const stored = storedOrders.find(
+                (item) => item.id === expected.order.id,
+              ),
+              order = expected.order;
+            if (
+              !stored ||
+              stableHash(stored.paperDetails) !== stableHash(expected) ||
+              stored.status !== order.status ||
+              stored.executionMode !== 'PAPER' ||
+              stored.tokenMint !== order.tokenMint ||
+              stored.side !== order.side ||
+              !moneyMatches(
+                stored.requestedQuantity,
+                order.requestedQuantity,
+              ) ||
+              !moneyMatches(stored.estimatedFeesUsd, order.estimatedFeesUsd) ||
+              !moneyMatches(stored.actualFeesUsd, order.actualFeesUsd) ||
+              !timeMatches(stored.createdAt, order.createdAt) ||
+              !timeMatches(stored.submittedAt, order.submittedAt) ||
+              !timeMatches(stored.executedAt, order.executedAt)
+            )
+              throw new Error('Paper order materialization mismatch');
+            for (const fill of expected.trades) {
+              const trade = storedTrades.find((item) => item.id === fill.id);
+              if (
+                !trade ||
+                trade.orderId !== fill.orderId ||
+                trade.tokenMint !== fill.tokenMint ||
+                trade.side !== fill.side ||
+                trade.positionId !== expected.positionId ||
+                !moneyMatches(trade.executedQuantity, fill.executedQuantity) ||
+                !moneyMatches(
+                  trade.executionPriceUsd,
+                  fill.executionPriceUsd,
+                ) ||
+                !moneyMatches(trade.feesUsd, fill.feesUsd) ||
+                !moneyMatches(trade.notionalUsd, expected.notionalUsd) ||
+                !timeMatches(trade.timestamp, fill.timestamp)
+              )
+                throw new Error('Paper fill materialization mismatch');
+            }
+          }
+          return { definition, state, events };
+        },
+        options?.readOnly
+          ? { isolationLevel: 'repeatable read', accessMode: 'read only' }
+          : undefined,
+      );
     },
     async initialize(input, initial, posting) {
       const definition = paperAccountDefinitionSchema.parse(input),
@@ -191,6 +235,9 @@ export function createPaperRepository(db: Database): PaperRepository {
         riskPolicy: definition.riskPolicy,
         strategyRunId: definition.strategyRunId,
         replayHash: definition.replayHash,
+        ...(definition.forwardExecution
+          ? { forwardExecution: definition.forwardExecution }
+          : {}),
       });
       if (definition.configHash !== expectedHash)
         throw new Error('Paper portfolio configuration hash mismatch');
@@ -214,12 +261,15 @@ export function createPaperRepository(db: Database): PaperRepository {
             .where(eq(strategyRuns.id, definition.strategyRunId))
         )[0];
         if (
-          run?.mode !== 'FIXTURE' ||
+          run?.mode !==
+            (definition.dataMode === 'FORWARD_LIVE'
+              ? 'LIVE_NOT_READY'
+              : 'FIXTURE') ||
           run.configHash !== stableHash(definition.strategyPolicy) ||
           run.riskPolicyHash !== stableHash(definition.riskPolicy)
         )
           throw new Error(
-            'Paper replay requires its matching persisted fixture strategy run',
+            'Paper portfolio requires its matching persisted strategy run',
           );
         const id = stableId(['paper-initial-balance-v1', definition.id]),
           event = {
@@ -305,6 +355,14 @@ export function createPaperRepository(db: Database): PaperRepository {
       const command = paperCommandSchema.parse(input),
         inputHash = stableHash(command);
       return db.transaction(async (tx) => {
+        // Use the same lock ordering as the forward worker and administrative controls.
+        const forward = (
+          await tx
+            .select()
+            .from(forwardAccounts)
+            .where(eq(forwardAccounts.portfolioId, portfolioId))
+            .for('update')
+        )[0];
         const row = (
           await tx
             .select()
@@ -315,6 +373,61 @@ export function createPaperRepository(db: Database): PaperRepository {
         if (!row) throw new Error('Unknown paper portfolio');
         const definition = paperAccountDefinitionSchema.parse(row.definition),
           current = paperPortfolioStateSchema.parse(row.state);
+        if (definition.dataMode !== 'FIXTURE') {
+          if (!forward?.ownerPid)
+            throw new Error('Forward mutation requires an initialized owner');
+          const owner = await forwardOwnerPid(
+            tx,
+            portfolioId,
+            command.type === 'RESET_HALT' ? forward.ownerPid : undefined,
+          );
+          if (owner !== forward.ownerPid)
+            throw new Error(
+              'Forward mutation requires the PostgreSQL ownership session',
+            );
+          if (
+            command.type === 'ENTRY' &&
+            (forward.status !== 'RUNNING' ||
+              !forward.health?.reconciledAt ||
+              forward.health.market !== 'HEALTHY' ||
+              forward.health.database !== 'HEALTHY' ||
+              forward.health.sourceAt !== command.at)
+          )
+            throw new Error('Operational entry gate is closed');
+          if (command.type === 'RESET_HALT' && forward.status !== 'HALTED')
+            throw new Error('Forward reset requires an operational halt');
+        }
+        if (command.type === 'ENTRY' || command.type === 'MARK') {
+          if (definition.dataMode === 'FORWARD_LIVE')
+            throw new Error('Live execution evidence is NOT_READY');
+          const execution = command.execution;
+          if (definition.dataMode === 'FORWARD_REPLAY') {
+            if (
+              !execution ||
+              execution.runId !== portfolioId ||
+              !definition.forwardExecution ||
+              stableHash(execution.config) !==
+                stableHash(definition.forwardExecution)
+            )
+              throw new Error(
+                'Forward execution must use its immutable account configuration',
+              );
+          } else if (execution) {
+            const run = await tx.execute(
+              sql`select plan from backtest_runs where id=${execution.runId} and portfolio_id=${portfolioId}`,
+            );
+            const plan = (
+              run.rows[0] as { plan?: { execution?: unknown } } | undefined
+            )?.plan;
+            if (
+              !plan?.execution ||
+              stableHash(plan.execution) !== stableHash(execution.config)
+            )
+              throw new Error(
+                'Paper execution configuration differs from immutable backtest plan',
+              );
+          }
+        }
         const existing = (
           await tx
             .select()
@@ -463,6 +576,37 @@ export function createPaperRepository(db: Database): PaperRepository {
             strategyCandidateId: record.signalId,
             paperDetails: record,
           });
+          if (record.audit) {
+            if (
+              record.audit.orderId !== order.id ||
+              record.audit.context.runId !== record.audit.runId
+            )
+              throw new Error('Execution audit identity mismatch');
+            const forward = definition.dataMode === 'FORWARD_REPLAY';
+            if (forward) {
+              if (record.audit.runId !== portfolioId)
+                throw new Error('Forward attempt account mismatch');
+            } else {
+              const runs = await tx.execute(
+                sql`select id from backtest_runs where id=${record.audit.runId} and portfolio_id=${portfolioId}`,
+              );
+              if (runs.rows.length !== 1)
+                throw new Error(
+                  'Execution attempt does not belong to portfolio run',
+                );
+            }
+            await tx.insert(executionSimulationAttempts).values({
+              id: record.audit.id,
+              runId: forward ? null : record.audit.runId,
+              forwardPortfolioId: forward ? portfolioId : null,
+              orderId: order.id,
+              portfolioId,
+              modelVersion: record.audit.modelVersion,
+              outcome: record.audit.outcome,
+              executedAt: record.audit.executedAt,
+              payload: record.audit,
+            });
+          }
           for (const fill of record.trades) {
             if (
               fill.orderId !== order.id ||

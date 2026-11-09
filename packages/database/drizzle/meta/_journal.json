@@ -64,6 +64,48 @@
       "when": 1794141932862,
       "tag": "0008_historical_replay_order_index",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794146551048,
+      "tag": "0009_execution_realism",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794147808501,
+      "tag": "0010_scenario_membership",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794200493260,
+      "tag": "0011_forward_paper",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794217173769,
+      "tag": "0012_strategy_evaluation",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794218518112,
+      "tag": "0013_swap_execution_assessments",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794219787932,
+      "tag": "0014_forward_operations",
+      "breakpoints": true
     }
   ]
 }

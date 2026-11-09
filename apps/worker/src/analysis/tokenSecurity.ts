@@ -13,6 +13,7 @@ import {
 } from '@solana-program/token-2022';
 import { mintAddressSchema, mintSecuritySchema } from '@solemn/shared';
 import type { MintSecurity } from '@solemn/shared';
+import { isReadOnlyRpcUrl } from '../config/index.js';
 import type { Config } from '../config/index.js';
 import { HttpReader, ProviderError, providerError } from './httpReader.js';
 import { emptySecurity } from './observations.js';
@@ -164,12 +165,17 @@ export interface SecurityClient {
 }
 export class TokenSecurityClient implements SecurityClient {
   private readonly reader: HttpReader;
+  private readonly endpoint: string;
   constructor(
-    private readonly config: Config,
+    config: Config,
     fetcher: typeof fetch = fetch,
     onRateLimit: () => void = () => undefined,
     private readonly now: () => number = Date.now,
   ) {
+    const endpoint = new URL(config.SOLANA_RPC_URL);
+    if (!isReadOnlyRpcUrl(endpoint))
+      throw new Error('Unsupported read-only RPC endpoint');
+    this.endpoint = endpoint.href;
     this.reader = new HttpReader(
       config,
       config.RISK_RPC_REQUEST_INTERVAL_MS,
@@ -192,7 +198,7 @@ export class TokenSecurityClient implements SecurityClient {
       const batch = mints.slice(offset, offset + 100);
       try {
         const response = await this.reader.request(
-          this.config.SOLANA_RPC_URL,
+          this.endpoint,
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

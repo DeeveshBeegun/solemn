@@ -1,3 +1,4 @@
+import { closedPositionMetrics } from '../analytics/closedPositionMetrics.js';
 import { fromAtomic, stableId, toAtomic } from '@solemn/shared';
 import type {
   BacktestMetrics,
@@ -9,8 +10,20 @@ import type {
   StrategyDecision,
   StoredDataset,
 } from '@solemn/shared';
-import { HUNDRED, SCALE, percentage, signed } from '../portfolio/decimal.js';
+import { SCALE, percentage } from '../portfolio/decimal.js';
 export class PerformanceAnalyzer {
+  private attempts = 0;
+  private outcomes: Record<string, number> = {};
+  private latencySamples: number[] = [];
+  private impactTotal = 0n;
+  private impactMax = 0n;
+  private impactCount = 0;
+  private feeCategories: Record<string, bigint> = {};
+  private failedFees = 0n;
+  private unknownLamports = 0n;
+  private slippageFailures = 0;
+  private filledEntries = 0;
+  private filledExits = 0;
   readonly tokens = new Set<string>();
   readonly blockedTokens = new Set<string>();
   evaluations = 0;
@@ -39,7 +52,12 @@ export class PerformanceAnalyzer {
   private peak: bigint;
   private maximumDrop = 0n;
   private peakAtDrop: bigint;
-  constructor(readonly plan: BacktestPlan) {
+  constructor(
+    readonly plan: Pick<
+      BacktestPlan,
+      'paper' | 'runId' | 'execution' | 'maxEvents'
+    >,
+  ) {
     this.peak = toAtomic(plan.paper.initialBalanceUsd);
     this.peakAtDrop = this.peak;
   }
@@ -77,6 +95,33 @@ export class PerformanceAnalyzer {
     if (command.type === 'MARK' && transition.result.outcome === 'STALE_DATA')
       this.stalePrices++;
     for (const record of transition.orders) {
+      if (record.audit) {
+        const audit = record.audit;
+        this.attempts++;
+        this.outcomes[audit.outcome] = (this.outcomes[audit.outcome] ?? 0) + 1;
+        if (this.latencySamples.length >= this.plan.maxEvents)
+          throw new Error('Execution metrics capacity exceeded');
+        this.latencySamples.push(audit.latencyMs);
+        if (audit.outcome === 'FILLED') {
+          if (record.order.side === 'BUY') this.filledEntries++;
+          else this.filledExits++;
+          if (audit.impactBps !== null) {
+            const n = toAtomic(audit.impactBps);
+            this.impactTotal += n;
+            this.impactMax = n > this.impactMax ? n : this.impactMax;
+            this.impactCount++;
+          }
+        }
+        for (const fee of audit.fees)
+          if (fee.usd !== null)
+            this.feeCategories[fee.category] =
+              (this.feeCategories[fee.category] ?? 0n) + toAtomic(fee.usd);
+        if (audit.outcome === 'FAILED_ON_CHAIN')
+          this.failedFees += toAtomic(audit.networkFeeUsd);
+        this.unknownLamports += BigInt(audit.unpricedFeeLamports);
+        if (audit.reason === 'SLIPPAGE_TOLERANCE_EXCEEDED')
+          this.slippageFailures++;
+      }
       if (record.order.side === 'BUY') this.entryOrders++;
       else this.exitOrders++;
       if (record.order.status === 'FAILED') {
@@ -118,6 +163,8 @@ export class PerformanceAnalyzer {
       )
     )
       reasons.push('LIQUIDATION_UNCERTAIN_OR_EXIT_BLOCKED');
+    if (state.executionUncertain)
+      reasons.push('EXECUTION_OR_NATIVE_FEE_UNCERTAIN');
     const reliable = reasons.length === 0,
       equity = reliable ? toAtomic(state.equityUsd) : null;
     if (equity !== null) {
@@ -147,79 +194,99 @@ export class PerformanceAnalyzer {
   finish(
     state: PaperPortfolioState,
     last: EquitySnapshot,
-    dataset: StoredDataset,
+    dataset: {
+      quality: Pick<
+        StoredDataset['quality'],
+        'missingHistoricalIntervals' | 'readiness'
+      >;
+    },
   ): BacktestMetrics {
     const closed = state.positions.filter(
       (position) => position.status === 'CLOSED',
     );
-    const wins = closed.filter(
-        (position) => signed(position.realizedPnlUsd) > 0n,
-      ),
-      losses = closed.filter(
-        (position) => signed(position.realizedPnlUsd) < 0n,
-      );
-    const sum = (positions: typeof closed) =>
-      positions.reduce(
-        (total, position) => total + signed(position.realizedPnlUsd),
-        0n,
-      );
-    const averagePnl = (positions: typeof closed) =>
-      positions.length
-        ? fromAtomic(sum(positions) / BigInt(positions.length))
-        : null;
-    const returnOf = (position: (typeof closed)[number]) =>
-      (signed(position.realizedPnlUsd) * HUNDRED) /
-      toAtomic(position.initialCostBasisUsd);
-    const averageReturn = (positions: typeof closed) =>
-      positions.length
-        ? fromAtomic(
-            positions.reduce(
-              (total, position) => total + returnOf(position),
-              0n,
-            ) / BigInt(positions.length),
-          )
-        : null;
-    const ordered = [...closed].sort((a, b) => {
-      const delta =
-        signed(a.realizedPnlUsd) * toAtomic(b.initialCostBasisUsd) -
-        signed(b.realizedPnlUsd) * toAtomic(a.initialCostBasisUsd);
-      return delta < 0n ? -1 : delta > 0n ? 1 : 0;
-    });
-    const middle = Math.floor(ordered.length / 2);
-    const median = ordered.length
-      ? fromAtomic(
-          ordered.length % 2
-            ? returnOf(ordered[middle]!)
-            : (returnOf(ordered[middle - 1]!) + returnOf(ordered[middle]!)) /
-                2n,
-        )
-      : null;
-    const maximum = wins.reduce<bigint | null>(
-      (best, position) =>
-        best === null || signed(position.realizedPnlUsd) > best
-          ? signed(position.realizedPnlUsd)
-          : best,
-      null,
-    );
-    const minimum = losses.reduce<bigint | null>(
-      (best, position) =>
-        best === null || signed(position.realizedPnlUsd) < best
-          ? signed(position.realizedPnlUsd)
-          : best,
-      null,
-    );
+    const { closedNetPnlUsd, meanReturnPercent, ...closedMetrics } =
+      closedPositionMetrics(closed);
+    void closedNetPnlUsd;
+    void meanReturnPercent;
     const initial = toAtomic(this.plan.paper.initialBalanceUsd),
       finalEquity =
         last.totalEquityUsd === null ? null : toAtomic(last.totalEquityUsd);
     const open = state.positions.filter(
       (position) => position.status !== 'CLOSED',
     );
+    const latencies = this.latencySamples.sort((a, b) => a - b),
+      mid = Math.floor(latencies.length / 2);
+    const knownFees = Object.values(this.feeCategories).reduce(
+      (sum, n) => sum + n,
+      0n,
+    );
     return {
+      ...(this.plan.execution
+        ? {
+            execution: {
+              attempts: this.attempts,
+              outcomes: this.outcomes,
+              fillRatePercent: this.attempts
+                ? percentage(
+                    BigInt(this.outcomes.FILLED ?? 0),
+                    BigInt(this.attempts),
+                  )
+                : null,
+              entryFillRatePercent: this.entryOrders
+                ? percentage(
+                    BigInt(this.filledEntries),
+                    BigInt(this.entryOrders),
+                  )
+                : null,
+              exitFillRatePercent: this.exitOrders
+                ? percentage(BigInt(this.filledExits), BigInt(this.exitOrders))
+                : null,
+              averageLatencyMs: latencies.length
+                ? fromAtomic(
+                    (BigInt(latencies.reduce((s, n) => s + n, 0)) * SCALE) /
+                      BigInt(latencies.length),
+                  )
+                : null,
+              medianLatencyMs: latencies.length
+                ? fromAtomic(
+                    latencies.length % 2
+                      ? BigInt(latencies[mid]!) * SCALE
+                      : (BigInt(latencies[mid - 1]! + latencies[mid]!) *
+                          SCALE) /
+                          2n,
+                  )
+                : null,
+              averageImpactBps: this.impactCount
+                ? fromAtomic(this.impactTotal / BigInt(this.impactCount))
+                : null,
+              maximumImpactBps: this.impactCount
+                ? fromAtomic(this.impactMax)
+                : null,
+              slippageFailures: this.slippageFailures,
+              knownFeesUsd: fromAtomic(knownFees),
+              failedTransactionFeesUsd: fromAtomic(this.failedFees),
+              feesByCategoryUsd: Object.fromEntries(
+                Object.entries(this.feeCategories).map(([key, n]) => [
+                  key,
+                  fromAtomic(n),
+                ]),
+              ),
+              unknownFeeLamports: this.unknownLamports.toString(),
+              netUsdComplete:
+                !state.executionUncertain && last.totalEquityUsd !== null,
+              netRealizedPnlUsd: state.executionUncertain
+                ? null
+                : state.realizedPnlUsd,
+            },
+          }
+        : {}),
       portfolio: {
         startingBalanceUsd: this.plan.paper.initialBalanceUsd,
         endingCashUsd: state.availableCashUsd,
         endingMarkedEquityUsd: last.totalEquityUsd,
-        realizedNetPnlUsd: state.realizedPnlUsd,
+        realizedNetPnlUsd: state.executionUncertain
+          ? null
+          : state.realizedPnlUsd,
         unrealizedPnlUsd: last.unrealizedPnlUsd,
         totalNetReturnPercent:
           finalEquity === null
@@ -230,9 +297,11 @@ export class PerformanceAnalyzer {
         drawdownCoverageComplete: this.uncertainSnapshots === 0,
         buyFeesUsd: state.buyFeesUsd,
         sellFeesUsd: state.sellFeesUsd,
-        totalFeesUsd: fromAtomic(
-          toAtomic(state.buyFeesUsd) + toAtomic(state.sellFeesUsd),
-        ),
+        totalFeesUsd: state.executionUncertain
+          ? null
+          : fromAtomic(
+              toAtomic(state.buyFeesUsd) + toAtomic(state.sellFeesUsd),
+            ),
         simulatedSlippageUsd: fromAtomic(this.slippage),
       },
       trading: {
@@ -240,48 +309,7 @@ export class PerformanceAnalyzer {
         exitOrders: this.exitOrders,
         filledOrders: this.filledOrders,
         failedOrders: this.failedOrders,
-        closedPositions: closed.length,
-        winningClosedPositions: wins.length,
-        losingClosedPositions: losses.length,
-        breakEvenClosedPositions: closed.length - wins.length - losses.length,
-        winRatePercent: closed.length
-          ? fromAtomic((BigInt(wins.length) * HUNDRED) / BigInt(closed.length))
-          : null,
-        averageWinningReturnPercent: averageReturn(wins),
-        averageLosingReturnPercent: averageReturn(losses),
-        averageWinningPnlUsd: averagePnl(wins),
-        averageLosingPnlUsd: averagePnl(losses),
-        expectancyUsd: averagePnl(closed),
-        medianPositionReturnPercent: median,
-        largestWinningPositionUsd:
-          maximum === null ? null : fromAtomic(maximum),
-        largestLosingPositionUsd: minimum === null ? null : fromAtomic(minimum),
-        profitFactor: losses.length
-          ? {
-              value: fromAtomic((sum(wins) * SCALE) / -sum(losses)),
-              reason: null,
-            }
-          : {
-              value: null,
-              reason: closed.length
-                ? 'NO_LOSING_CLOSED_POSITIONS'
-                : 'NO_CLOSED_POSITIONS',
-            },
-        averageHoldingSeconds: closed.length
-          ? fromAtomic(
-              (BigInt(
-                closed.reduce(
-                  (total, position) =>
-                    total +
-                    Date.parse(position.closedAt!) -
-                    Date.parse(position.openedAt),
-                  0,
-                ),
-              ) *
-                SCALE) /
-                (BigInt(closed.length) * 1000n),
-            )
-          : null,
+        ...closedMetrics,
         maximumConcurrentPositions: this.maxConcurrent,
       },
       strategy: {

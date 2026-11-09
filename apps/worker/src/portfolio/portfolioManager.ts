@@ -3,6 +3,7 @@ import {
   paperCommandSchema,
   paperOrderRecordSchema,
   stableId,
+  toAtomic as unsignedAtomic,
   toAtomic,
 } from '@solemn/shared';
 import type {
@@ -21,6 +22,8 @@ import {
   executionPrice,
   observationProblem,
 } from '../execution/paperExecutor.js';
+import { executionMark } from '../execution/simulation/mark.js';
+import { HUNDRED, signed } from './decimal.js';
 import { entryRiskReasons } from '../risk/riskManager.js';
 import { sizePosition } from '../risk/positionSizing.js';
 import { applyPosting, reconcilePortfolio } from './accountingService.js';
@@ -83,6 +86,10 @@ export function applyPaperCommand(
     return done('HALTED', [command.reason]);
   }
   if (command.type === 'RESET_HALT') {
+    if (state.executionUncertain)
+      return done('ENTRY_REJECTED', [
+        'EXECUTION_UNCERTAINTY_REQUIRES_RECONCILIATION',
+      ]);
     if (
       state.positions.some(
         (position) =>
@@ -100,6 +107,14 @@ export function applyPaperCommand(
     state.peakEquityUsd = state.equityUsd;
     state.dayStartingEquityUsd = state.equityUsd;
     return done('RESET', ['ADMINISTRATIVE_RESET', command.reason]);
+  }
+  if (command.type === 'FEED_UNAVAILABLE') {
+    for (const position of state.positions)
+      if (position.status !== 'CLOSED') {
+        position.valuationStale = true;
+        position.liquidationUncertain = true;
+      }
+    return done('STALE_DATA', [command.reason]);
   }
   if (command.type === 'EXIT_UNAVAILABLE') {
     const position = state.positions.find(
@@ -141,13 +156,31 @@ export function applyPaperCommand(
     const observation = command.observation as ExecutionObservation,
       price = executionPrice(observation, definition.policy);
     if (!price) return done('ENTRY_REJECTED', ['INVALID_EXECUTION_PRICE']);
-    const size = sizePosition(
+    const legacySize = sizePosition(
       state.equityUsd,
       state.availableCashUsd,
       price,
       definition.policy,
     );
-    if (!size) return done('ENTRY_REJECTED', ['NO_VALID_POSITION_SIZE']);
+    const allocation =
+      (toAtomic(state.equityUsd) *
+        toAtomic(definition.policy.maxPositionPercent)) /
+      HUNDRED;
+    const budget =
+      allocation < toAtomic(state.availableCashUsd)
+        ? allocation
+        : toAtomic(state.availableCashUsd);
+    const size = command.execution
+      ? {
+          quantity: command.execution.quote.quantity,
+          totalCostUsd: fromAtomic(budget),
+        }
+      : legacySize;
+    if (
+      !size ||
+      toAtomic(size.totalCostUsd) < toAtomic(definition.policy.minimumOrderUsd)
+    )
+      return done('ENTRY_REJECTED', ['NO_VALID_POSITION_SIZE']);
     const reserve = toAtomic(size.totalCostUsd),
       positionId = stableId(['paper-position-v1', state.id, candidate.id]);
     post(cashPosting('RESERVE', -reserve, reserve));
@@ -164,9 +197,13 @@ export function applyPaperCommand(
       definition.policy,
       command.at,
       { availableCashUsd: size.totalCostUsd, tokenBalance: '0' },
+      command.execution,
     );
     const record = paperOrderRecordSchema.parse({
       ...execution,
+      ...(execution.audit
+        ? { audit: { ...execution.audit, signalId: candidate.id, positionId } }
+        : {}),
       request,
       positionId,
       signalId: candidate.id,
@@ -177,6 +214,18 @@ export function applyPaperCommand(
     orders.push(record);
     if (execution.order.status !== 'FILLED') {
       post(cashPosting('RELEASE', reserve, -reserve));
+      if (execution.audit) {
+        const fee = toAtomic(execution.audit.networkFeeUsd);
+        if (fee) post(cashPosting('EXECUTION_FEE', -fee, 0n, -fee, fee));
+        if (
+          !execution.audit.retryAllowed ||
+          execution.audit.unpricedFeeLamports !== '0'
+        ) {
+          state.executionUncertain = true;
+          state.status = 'HALTED';
+          state.haltReason = 'EXECUTION_UNCERTAIN';
+        }
+      }
       return done(
         'ENTRY_REJECTED',
         [execution.failureReason as string],
@@ -257,12 +306,21 @@ export function applyPaperCommand(
       position.id,
     );
   }
-  const price = executionPrice(observation, definition.policy);
+  const price = command.execution
+    ? (executionMark(observation, position.quantity, command.execution.config)
+        ?.priceUsd ?? observation.priceUsd)
+    : executionPrice(observation, definition.policy);
   if (!price) {
     position.valuationStale = true;
     return done('STALE_DATA', ['INVALID_EXECUTION_PRICE'], null, position.id);
   }
-  updatePositionMark(position, observation, definition.policy);
+  updatePositionMark(
+    position,
+    observation,
+    definition.policy,
+    command.execution?.config,
+  );
+
   // UNKNOWN/stale risk blocks entry; known current REJECTED evidence also requests a protective exit.
   const criticalRisk =
     command.risk?.currentStatus === 'REJECTED' &&
@@ -315,10 +373,20 @@ export function applyPaperCommand(
       availableCashUsd: state.availableCashUsd,
       tokenBalance: position.quantity,
     },
+    command.execution,
   );
   orders.push(
     paperOrderRecordSchema.parse({
       ...execution,
+      ...(execution.audit
+        ? {
+            audit: {
+              ...execution.audit,
+              signalId: position.signalId,
+              positionId: position.id,
+            },
+          }
+        : {}),
       request,
       positionId: position.id,
       signalId: null,
@@ -328,7 +396,26 @@ export function applyPaperCommand(
     }),
   );
   if (execution.order.status !== 'FILLED') {
+    if (execution.audit) {
+      const fee = unsignedAtomic(execution.audit.networkFeeUsd);
+      if (fee) {
+        post(cashPosting('EXECUTION_FEE', -fee, 0n, -fee, 0n, fee));
+        position.realizedPnlUsd = fromAtomic(
+          signed(position.realizedPnlUsd) - fee,
+        );
+        position.feesUsd = fromAtomic(toAtomic(position.feesUsd) + fee);
+      }
+      if (
+        !execution.audit.retryAllowed ||
+        execution.audit.unpricedFeeLamports !== '0'
+      ) {
+        state.executionUncertain = true;
+        state.status = 'HALTED';
+        state.haltReason = 'EXECUTION_UNCERTAIN';
+      }
+    }
     position.status = 'EXIT_BLOCKED';
+    position.liquidationUncertain = true;
     position.blockedReason = execution.failureReason;
     position.pendingExitReason = exit.reason;
     position.pendingExitQuantity = exit.quantity;
@@ -352,8 +439,14 @@ export function applyPaperCommand(
     price,
   );
   post(cashPosting('SELL_FILL', netProceeds, 0n, realized, 0n, fee));
-  if (position.status !== 'CLOSED')
-    updatePositionMark(position, observation, definition.policy);
+  if (position.status !== 'CLOSED') {
+    updatePositionMark(
+      position,
+      observation,
+      definition.policy,
+      command.execution?.config,
+    );
+  }
   return done(
     'EXIT_FILLED',
     [

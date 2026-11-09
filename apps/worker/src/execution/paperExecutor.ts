@@ -1,3 +1,6 @@
+import { simulateExecution } from './simulation/executionSimulator.js';
+import { decimalUnits, scale } from './simulation/poolModels.js';
+import { networkFees } from './simulation/feeModel.js';
 import {
   assertOrderTransition,
   executionObservationSchema,
@@ -8,6 +11,8 @@ import {
 } from '@solemn/shared';
 import type {
   ExecutionObservation,
+  ExecutionContext,
+  ExecutionAudit,
   OrderRequest,
   OrderStatus,
   PaperPolicy,
@@ -74,6 +79,7 @@ export function executionPrice(
   return price > 0n ? fromAtomic(price) : null;
 }
 export interface PaperExecutionResult extends OrderResult {
+  audit?: ExecutionAudit;
   notionalUsd: string;
   slippageUsd: string;
   lifecycle: OrderStatus[];
@@ -86,6 +92,7 @@ export class PaperExecutor {
     policy: PaperPolicy,
     at: string,
     resources: { availableCashUsd: string; tokenBalance: string },
+    context?: ExecutionContext,
   ): PaperExecutionResult {
     const request = orderRequestSchema.parse(input);
     if (observation) executionObservationSchema.parse(observation);
@@ -121,6 +128,120 @@ export class PaperExecutor {
       result.failureReason = reason;
       return result;
     };
+    if (context) {
+      const audit = simulateExecution(request.orderId, context, at);
+      result.audit = audit;
+      const localReject = (reason: string) => {
+        audit.outcome = 'REJECTED_BEFORE_SUBMISSION';
+        audit.reason = reason;
+        audit.fees = [];
+        audit.feeUsd = '0';
+        audit.networkFeeUsd = '0';
+        audit.includedFeeUsd = '0';
+        audit.unpricedFeeLamports = '0';
+        audit.inputUnits = '0';
+        audit.outputUnits = '0';
+        audit.updatedPool = null;
+        result.order.actualFeesUsd = '0';
+        return fail(reason);
+      };
+      if (
+        context.quote.side !== request.side ||
+        context.quote.quantity !== request.quantity ||
+        (context.pool && context.pool.baseMint !== request.tokenMint)
+      )
+        return localReject('EXECUTION_REQUEST_MISMATCH');
+      if (
+        toAtomic(request.quantity) % quantityStep(policy.quantityDecimals) !==
+        0n
+      )
+        return localReject('INVALID_QUANTITY_PRECISION');
+      let network;
+      try {
+        network = networkFees(context.config, at, context.nativeUsd);
+      } catch {
+        network = null;
+      }
+      const tipUsd =
+        context.config.network.routeRequiresTip &&
+        network?.rate !== null &&
+        network?.rate !== undefined
+          ? ceilDivide(
+              BigInt(context.config.network.tipLamports) * network.rate,
+              1000000000n,
+            )
+          : 0n;
+      const maxBuy = context.quote.pool?.quoteUsd
+        ? (BigInt(context.quote.limitUnits) *
+            toAtomic(context.quote.pool.quoteUsd) +
+            scale(context.quote.pool.quoteDecimals) -
+            1n) /
+            scale(context.quote.pool.quoteDecimals) +
+          (network?.usd ?? 0n) +
+          tipUsd
+        : 0n;
+      if (
+        request.side === 'BUY' &&
+        maxBuy > toAtomic(resources.availableCashUsd)
+      )
+        return localReject('INSUFFICIENT_CASH');
+      if ((network?.usd ?? 0n) + tipUsd > toAtomic(resources.availableCashUsd))
+        return localReject('INSUFFICIENT_CASH_FOR_NETWORK_FEES');
+      if (
+        request.side === 'SELL' &&
+        toAtomic(request.quantity) > toAtomic(resources.tokenBalance)
+      )
+        return localReject('INSUFFICIENT_TOKENS');
+      result.order.estimatedFeesUsd = audit.feeUsd;
+      result.order.actualFeesUsd = audit.feeUsd;
+      if (audit.outcome !== 'FILLED')
+        return fail(audit.reason ?? audit.outcome);
+      const pool = context.pool!,
+        quoteUnits = BigInt(
+          request.side === 'BUY' ? audit.inputUnits : audit.outputUnits,
+        );
+      const grossUsd =
+        request.side === 'BUY'
+          ? ceilDivide(
+              quoteUnits * toAtomic(pool.quoteUsd!),
+              scale(pool.quoteDecimals),
+            )
+          : (quoteUnits * toAtomic(pool.quoteUsd!)) / scale(pool.quoteDecimals);
+      if (request.side === 'BUY' && grossUsd < toAtomic(policy.minimumOrderUsd))
+        return localReject('ORDER_BELOW_MINIMUM');
+      if (
+        request.side === 'BUY' &&
+        grossUsd + toAtomic(audit.networkFeeUsd) >
+          toAtomic(resources.availableCashUsd)
+      )
+        return localReject('INSUFFICIENT_CASH_AT_EXECUTION_FX');
+      const included = toAtomic(audit.includedFeeUsd),
+        fees = toAtomic(audit.feeUsd);
+      const notional =
+        request.side === 'BUY' ? grossUsd - included : grossUsd + included;
+      if (notional <= 0n) return localReject('NOTIONAL_BELOW_PRECISION');
+      // Venue/transfer fees are in the AMM cash flow. Split them out for the existing ledger exactly once.
+      result.notionalUsd = fromAtomic(notional);
+      const price = fromAtomic(
+        (notional * scale(18)) / toAtomic(request.quantity),
+      );
+      if (toAtomic(price) <= 0n)
+        return localReject('EXECUTION_PRICE_BELOW_PRECISION');
+      decimalUnits(request.quantity, pool.baseDecimals);
+      result.trades.push({
+        id: stableId(['paper-fill-v1', request.orderId]),
+        orderId: request.orderId,
+        tokenMint: request.tokenMint,
+        side: request.side,
+        executedQuantity: request.quantity,
+        executionPriceUsd: price,
+        feesUsd: fromAtomic(fees),
+        timestamp: at,
+      });
+      result.order.executedAt = at;
+      move('FILLED');
+      return result;
+    }
     const problem = observationProblem(
       observation,
       policy,

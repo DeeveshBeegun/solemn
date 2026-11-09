@@ -1,0 +1,9 @@
+# Future signing architecture
+
+Design only for a separately authorized milestone. The general Solemn worker would continue to generate intents, apply portfolio and token-risk policy, and request construction of unsigned transactions. An independent verifier would bind the exact message hash to an approved intent and to verifiable account, token mint, destination, fee, amount and expiry evidence. Versioned messages and lookup tables would be resolved at a known chain context. Unknown instructions and unverifiable value transfers would fail the verifier.
+
+A separate authorization boundary would approve one immutable envelope containing the intent, message hash, maximum transaction value, daily spend reservation, expiry, chain context and one-time idempotency key. A future isolated signing service would enforce independent limits and policy, use restricted authenticated access and keep custody in a reviewed KMS or HSM design appropriate to the chain. The strategy, quote client and general worker would have no access to raw key material.
+
+A separately authorized submitter would accept only a valid, unexpired approval and exact message, record the signature identifier, and reconcile ambiguous submission outcomes before any retry. Confirmation would independently verify the finalized transaction, token and SOL debits and credits, fees and portfolio postings. It would not infer fills from a quote or simulation.
+
+Emergency revocation would disable approvals and signing independently of worker state, revoke submitter access, preserve audit history and require explicit recovery. Before production consideration, the review would cover role separation, least privilege, policy and instruction allowlists, daily and per-transaction limits, replay prevention, monitoring, key rotation, tested backups and recovery, and incident drills.

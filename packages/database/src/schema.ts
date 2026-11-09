@@ -416,3 +416,10 @@ export const trades = pgTable(
   ],
 );
 export * from './backtestSchema.js';
+
+export * from './executionSchema.js';
+export * from './forwardSchema.js';
+export * from './analyticsSchema.js';
+
+export * from './swapAuditSchema.js';
+export * from './operationsSchema.js';

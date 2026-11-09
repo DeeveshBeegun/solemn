@@ -7,6 +7,7 @@ import {
   timestampSchema,
 } from '@solemn/shared';
 import type { JupiterObservation } from '@solemn/shared';
+import { jupiterTokensBaseUrlSchema } from '../config/index.js';
 import type { Config } from '../config/index.js';
 import { HttpReader, ProviderError, providerError } from './httpReader.js';
 import { emptyJupiter, providerDecimal } from './observations.js';
@@ -45,6 +46,7 @@ export interface JupiterClient {
 
 export class JupiterTokenClient implements JupiterClient {
   private readonly reader: HttpReader;
+  private readonly origin: string;
   private readonly cache = new Map<
     string,
     { observation: JupiterObservation; expires: number }
@@ -56,6 +58,9 @@ export class JupiterTokenClient implements JupiterClient {
     onRateLimit: () => void = () => undefined,
     private readonly now: () => number = Date.now,
   ) {
+    this.origin = new URL(
+      jupiterTokensBaseUrlSchema.parse(config.JUPITER_TOKENS_BASE_URL),
+    ).origin;
     this.reader = new HttpReader(
       config,
       config.JUPITER_REQUEST_INTERVAL_MS,
@@ -154,17 +159,16 @@ export class JupiterTokenClient implements JupiterClient {
   ): Promise<Map<string, JupiterObservation>> {
     const fetchedAt = () => new Date(this.now()).toISOString();
     try {
-      const url = new URL(
-        `${this.config.JUPITER_TOKENS_BASE_URL.replace(/\/$/, '')}/search`,
-      );
+      const url = new URL('/tokens/v2/search', this.origin);
       url.searchParams.set('query', mints.join(','));
       const response = await this.reader.request(
         url.toString(),
         {
           method: 'GET',
-          headers: this.config.JUPITER_API_KEY
-            ? { 'x-api-key': this.config.JUPITER_API_KEY }
-            : {},
+          headers:
+            this.origin === 'https://api.jup.ag' && this.config.JUPITER_API_KEY
+              ? { 'x-api-key': this.config.JUPITER_API_KEY }
+              : {},
         },
         signal,
       );

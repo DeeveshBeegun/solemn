@@ -1,3 +1,4 @@
+import { executionConfigSchema } from './execution.js';
 import { z } from 'zod';
 import {
   idSchema,
@@ -252,6 +253,7 @@ export const backtestOptionsSchema = z.strictObject({
     .literal('SOLEMN_LAUNCH_MOMENTUM_V1')
     .default('SOLEMN_LAUNCH_MOMENTUM_V1'),
   runId: idSchema.optional(),
+  execution: executionConfigSchema.optional(),
   executionLatencyMs: z.number().int().min(0).max(60000).default(1000),
   executionWaitMs: z.number().int().min(1).max(3600000).default(30000),
   equityCadenceMs: z.number().int().min(1000).max(600000).default(60000),
@@ -277,6 +279,7 @@ export const backtestPlanSchema = z
     startTime: timestampSchema,
     endTime: timestampSchema,
     tradingMode: z.literal('PAPER'),
+    execution: executionConfigSchema.optional(),
     executionLatencyMs: z.number().int().nonnegative(),
     executionWaitMs: z.number().int().positive(),
     equityCadenceMs: z.number().int().positive(),
@@ -332,12 +335,31 @@ export const executionIntentSchema = z.strictObject({
   reasons: z.array(z.string()),
 });
 export type ExecutionIntent = z.infer<typeof executionIntentSchema>;
+export type ExecutionMetrics = {
+  attempts: number;
+  outcomes: Record<string, number>;
+  fillRatePercent: string | null;
+  entryFillRatePercent: string | null;
+  exitFillRatePercent: string | null;
+  averageLatencyMs: string | null;
+  medianLatencyMs: string | null;
+  averageImpactBps: string | null;
+  maximumImpactBps: string | null;
+  slippageFailures: number;
+  knownFeesUsd: string;
+  failedTransactionFeesUsd: string;
+  feesByCategoryUsd: Record<string, string>;
+  unknownFeeLamports: string;
+  netUsdComplete: boolean;
+  netRealizedPnlUsd: string | null;
+};
 export type BacktestMetrics = {
+  execution?: ExecutionMetrics;
   portfolio: {
     startingBalanceUsd: string;
     endingCashUsd: string;
     endingMarkedEquityUsd: string | null;
-    realizedNetPnlUsd: string;
+    realizedNetPnlUsd: string | null;
     unrealizedPnlUsd: string | null;
     totalNetReturnPercent: string | null;
     peakReliableEquityUsd: string;
@@ -345,7 +367,7 @@ export type BacktestMetrics = {
     drawdownCoverageComplete: boolean;
     buyFeesUsd: string;
     sellFeesUsd: string;
-    totalFeesUsd: string;
+    totalFeesUsd: string | null;
     simulatedSlippageUsd: string;
   };
   trading: {

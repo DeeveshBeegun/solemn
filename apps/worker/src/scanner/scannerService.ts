@@ -1,5 +1,5 @@
 import type { ScannerRepository } from '@solemn/database';
-import type { ScannerEvent } from '@solemn/shared';
+import type { ScannerEvent, ScannerGap } from '@solemn/shared';
 import type { Logger } from 'pino';
 import type { Config } from '../config/index.js';
 import { safeError } from '../services/logger.js';
@@ -16,6 +16,13 @@ export function createScannerService(
   logger: Logger,
   factory?: TransportFactory,
   onPersisted?: (event: ScannerEvent) => void,
+  auxiliary?: {
+    message(
+      raw: string,
+    ): 'UNHANDLED' | 'ACCEPTED' | 'BUDGET_EXHAUSTED' | 'QUEUE_SATURATED';
+    gap(gap: ScannerGap): void;
+  },
+  now: () => Date = () => new Date(),
 ) {
   const counters = createCounters();
   let stopping = false;
@@ -69,11 +76,21 @@ export function createScannerService(
       message(raw, binary) {
         if (stopping) return;
         counters.messagesReceived++;
+        const handled = binary
+          ? 'UNHANDLED'
+          : (auxiliary?.message(raw) ?? 'UNHANDLED');
+        if (handled !== 'UNHANDLED') {
+          if (handled === 'BUDGET_EXHAUSTED')
+            client.disconnect('METERED_BUDGET_EXHAUSTED', true);
+          if (handled === 'QUEUE_SATURATED')
+            client.disconnect('QUEUE_SATURATED', true);
+          return;
+        }
         const parsed = binary
           ? { kind: 'rejected' as const, reason: 'BINARY_MESSAGE' }
           : normalizeMessage(
               raw,
-              new Date().toISOString(),
+              now().toISOString(),
               config.SCANNER_MAX_MESSAGE_BYTES,
             );
         if (parsed.kind === 'ack') client.acknowledge(parsed.subscription);
@@ -110,6 +127,7 @@ export function createScannerService(
         }
       },
       gap(value) {
+        auxiliary?.gap(value);
         if (!queue.offer({ kind: 'gap', value }, true)) {
           lostAcceptedEvents = true;
           logger.error(
@@ -117,6 +135,9 @@ export function createScannerService(
             'Scanner gap journal saturated; interval recorded in logs only',
           );
         }
+      },
+      rateLimited() {
+        counters.rateLimitEvents++;
       },
       reconnect() {
         counters.reconnections++;
@@ -169,6 +190,8 @@ export function createScannerService(
       return shutdown;
     },
     waitForIdle: () => queue.waitForIdle(),
+    watchTrades: (mints: readonly string[]) => client.watchTrades(mints),
+    halt: () => client.disconnect('PERSISTENCE_FAILED', true),
   };
 }
 

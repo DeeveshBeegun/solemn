@@ -142,4 +142,37 @@ describe('official SPL mint security decoding', () => {
     expect(failed?.mintAuthorityDisabled).toBeNull();
     expect(JSON.stringify(failed)).not.toContain('credential');
   });
+  it('rejects trade endpoints and leaves timed-out mint evidence unknown', async () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgresql://localhost/solemn',
+      SOLANA_RPC_URL: 'http://127.0.0.1:1234',
+      RISK_HTTP_TIMEOUT_MS: '10',
+      RISK_HTTP_MAX_ATTEMPTS: '1',
+    });
+    for (const url of [
+      'https://api.jup.ag/swap/v2/execute',
+      'https://pumpportal.fun/api/trade',
+    ])
+      expect(
+        () => new TokenSecurityClient({ ...config, SOLANA_RPC_URL: url }),
+      ).toThrow('read-only RPC');
+    const client = new TokenSecurityClient(
+      config,
+      async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) throw new Error('Expected RPC timeout signal');
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    expect(
+      (await client.getMany([MINT], new AbortController().signal)).get(MINT),
+    ).toMatchObject({
+      state: 'ERROR',
+      validMint: null,
+      error: { code: 'TIMEOUT' },
+    });
+  });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE "backtest_scenarios" DROP CONSTRAINT "backtest_scenarios_run_id_unique";

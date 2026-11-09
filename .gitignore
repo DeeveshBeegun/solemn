@@ -10,3 +10,5 @@ coverage/
 
 # Generated backtest reports and CSV exports
 reports/backtests/
+reports/analytics/
+reports/release/

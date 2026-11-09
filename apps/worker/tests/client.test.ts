@@ -34,6 +34,7 @@ describe('PumpPortal transport lifecycle', () => {
   });
   function setup(extra: Record<string, string> = {}) {
     const sockets: FakeTransport[] = [];
+    const urls: string[] = [];
     const gaps: ScannerGap[] = [];
     let logs = '';
     const logger = pino(
@@ -55,14 +56,23 @@ describe('PumpPortal transport lifecycle', () => {
         reconnect,
         canReconnect,
       },
-      (_url, handlers) => {
+      (url, handlers) => {
+        urls.push(url);
         const socket = new FakeTransport(handlers);
         sockets.push(socket);
         return socket;
       },
       () => 0.5,
     );
-    return { client, sockets, gaps, reconnect, canReconnect, logs: () => logs };
+    return {
+      client,
+      sockets,
+      urls,
+      gaps,
+      reconnect,
+      canReconnect,
+      logs: () => logs,
+    };
   }
   it('uses one connection, sends only free methods, acknowledges subscriptions and stops idempotently', async () => {
     const { client, sockets, gaps } = setup();
@@ -135,11 +145,12 @@ describe('PumpPortal transport lifecycle', () => {
     await client.stop();
   });
   it('halts on authentication failures without exposing credentials', async () => {
-    const { client, sockets, logs } = setup({
+    const { client, sockets, urls, logs } = setup({
       PUMPPORTAL_API_KEY: 'SECRET_API_KEY',
       PUMPPORTAL_WS_URL: 'wss://pumpportal.fun/api/data?api-key=URL_SECRET',
     });
     client.start();
+    expect(new URL(urls[0]!).search).toBe('');
     sockets[0]?.handlers.response(401);
     await vi.advanceTimersByTimeAsync(60000);
     expect(client.status).toBe('HALTED');

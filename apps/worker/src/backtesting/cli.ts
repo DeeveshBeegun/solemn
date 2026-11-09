@@ -1,3 +1,5 @@
+import { createAnalyticsFixture } from './analyticsFixture.js';
+import { executionScenario } from '../execution/simulation/executionScenarios.js';
 import { parseArgs } from 'node:util';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -128,19 +130,25 @@ async function main() {
     let dataset;
     if (options.dataset.startsWith('fixtures')) {
       if (
-        !['fixtures', 'fixtures-winner', 'fixtures-zero-trade'].includes(
-          options.dataset,
-        )
+        ![
+          'fixtures',
+          'fixtures-winner',
+          'fixtures-zero-trade',
+          'fixtures-analytics',
+        ].includes(options.dataset)
       )
         throw new Error('Unknown fixture dataset');
-      const file = createBacktestFixture(
-        config,
-        options.dataset === 'fixtures-winner'
-          ? 'winner'
-          : options.dataset === 'fixtures-zero-trade'
-            ? 'zero-trade'
-            : 'all',
-      );
+      const file =
+        options.dataset === 'fixtures-analytics'
+          ? createAnalyticsFixture(config)
+          : createBacktestFixture(
+              config,
+              options.dataset === 'fixtures-winner'
+                ? 'winner'
+                : options.dataset === 'fixtures-zero-trade'
+                  ? 'zero-trade'
+                  : 'all',
+            );
       dataset = await history.register(
         file.manifest,
         historyEvents(file.events),
@@ -162,7 +170,13 @@ async function main() {
         options.maxEvents,
       );
     }
-    const plan = createBacktestPlan(options, dataset, config),
+    const plan = createBacktestPlan(
+        options.dataset === 'fixtures-analytics' && !options.execution
+          ? { ...options, execution: executionScenario('baseline') }
+          : options,
+        dataset,
+        config,
+      ),
       backtests = createBacktestRepository(database.db);
     logger.info(
       {

@@ -14,6 +14,32 @@ const config = loadConfig({
 const signal = () => new AbortController().signal;
 afterEach(() => vi.useRealTimers());
 describe('Jupiter V2 runtime contract', () => {
+  it('rejects untrusted token endpoints and keeps credentials off loopback mocks', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify([jupiterPayload()])));
+    expect(
+      () =>
+        new JupiterTokenClient(
+          {
+            ...config,
+            JUPITER_TOKENS_BASE_URL: 'https://example.invalid/tokens/v2',
+          },
+          fetcher,
+        ),
+    ).toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+    const client = new JupiterTokenClient(
+      { ...config, JUPITER_API_KEY: 'dummy-key' },
+      fetcher,
+    );
+    await client.getMany([MINT], signal());
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: 'GET',
+      headers: {},
+      redirect: 'error',
+    });
+  });
   it('splits batches at 100 and preserves optional activity statistics', async () => {
     const mints = Array.from({ length: 101 }, (_, index) =>
       String(getAddressDecoder().decode(new Uint8Array(32).fill(index + 1))),

@@ -1,6 +1,8 @@
+import { executionMark } from '../execution/simulation/mark.js';
 import { fromAtomic, toAtomic } from '@solemn/shared';
 import type {
   ExecutionObservation,
+  ExecutionConfig,
   PaperPolicy,
   PaperPosition,
 } from '@solemn/shared';
@@ -10,22 +12,29 @@ export function updatePositionMark(
   position: PaperPosition,
   observation: ExecutionObservation,
   policy: PaperPolicy,
+  execution?: ExecutionConfig,
 ): void {
-  const price = executionPrice(observation, policy);
+  const modelMark = execution
+    ? executionMark(observation, position.quantity, execution)
+    : null;
+  const price = execution
+    ? (modelMark?.priceUsd ?? observation.priceUsd)
+    : executionPrice(observation, policy);
   if (!price || observation.side !== 'SELL')
     throw new Error('A valid sell-side mark is required');
   position.mark = observation;
   const gross = moneyNotional(position.quantity, price, 'SELL');
-  position.markValueUsd = fromAtomic(
-    gross - feeFor(gross, policy.sellFeePercent),
-  );
+  position.markValueUsd = execution
+    ? (modelMark?.valueUsd ?? position.markValueUsd)
+    : fromAtomic(gross - feeFor(gross, policy.sellFeePercent));
   position.valuationStale = false;
-  position.liquidationUncertain =
-    observation.liquidityUsd === null ||
-    toAtomic(observation.liquidityUsd) === 0n ||
-    gross * HUNDRED >
-      toAtomic(observation.liquidityUsd) *
-        toAtomic(policy.maxLiquidityParticipationPercent);
+  position.liquidationUncertain = execution
+    ? !modelMark
+    : observation.liquidityUsd === null ||
+      toAtomic(observation.liquidityUsd) === 0n ||
+      gross * HUNDRED >
+        toAtomic(observation.liquidityUsd) *
+          toAtomic(policy.maxLiquidityParticipationPercent);
   if (
     position.highestSellPriceUsd === null ||
     toAtomic(price) > toAtomic(position.highestSellPriceUsd)
