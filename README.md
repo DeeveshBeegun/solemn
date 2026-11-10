@@ -90,6 +90,8 @@ Open [the control panel](http://127.0.0.1:4173). On first use, open Docker Deskt
 
 The panel runs one process at a time. **Process log** shows the current or last dashboard run. **Account events** and **Forward account** show data saved in PostgreSQL for the displayed account, including after a restart. **Stop** requests shutdown of the dashboard-owned process. A separate terminal worker must be stopped in its own terminal.
 
+Open **Data explorer** in the header to browse saved tokens, market events, risk assessments, strategy decisions, paper portfolios, fills, forward events, and backtest runs. Filter by UTC dates and, where offered, an exact token mint or portfolio ID. The bar chart shows the latest 14 days with matching records. In **Backtest runs**, select **View equity** to chart the latest 250 saved snapshots for that run. Gaps mark unavailable valuations. Explorer queries are read-only.
+
 Press Ctrl+C in the launcher terminal to close the panel and request shutdown of its process. PostgreSQL remains available. The dashboard binds to loopback only. Use `SOLEMN_UI_PORT=4180 pnpm ui` if the default port is in use. Changes to `.env` take effect when you restart the launcher.
 
 ## Installation and first run

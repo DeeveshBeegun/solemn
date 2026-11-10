@@ -13,6 +13,13 @@ import { loadConfig } from '../config/index.js';
 import { forwardStatus } from '../forward/monitor.js';
 import { scenarioNames } from '../execution/simulation/executionScenarios.js';
 
+import {
+  dataCatalog,
+  DataQueryError,
+  readDataset,
+  readEquity,
+} from './dataExplorer.js';
+
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 dotenv({ path: resolve(root, '.env'), quiet: true });
 const port = Number(process.env.SOLEMN_UI_PORT ?? '4173');
@@ -26,6 +33,9 @@ const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/dashboard.css', ['dashboard.css', 'text/css; charset=utf-8']],
   ['/dashboard.js', ['dashboard.js', 'text/javascript; charset=utf-8']],
+  ['/data', ['data.html', 'text/html; charset=utf-8']],
+  ['/data.css', ['data.css', 'text/css; charset=utf-8']],
+  ['/data.js', ['data.js', 'text/javascript; charset=utf-8']],
 ]);
 const accountPattern = /^[a-zA-Z0-9_-]{1,50}$/;
 const configuredAccount = process.env.FORWARD_ACCOUNT ?? 'week8';
@@ -524,6 +534,27 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (url.pathname === '/api/state')
       return json(res, 200, { token, defaultAccount, job });
+    if (url.pathname === '/api/data/catalog')
+      return json(res, 200, dataCatalog);
+    if (
+      url.pathname === '/api/data/records' ||
+      url.pathname === '/api/data/equity'
+    ) {
+      try {
+        const result =
+          url.pathname === '/api/data/records'
+            ? await readDataset(url.searchParams)
+            : await readEquity(url.searchParams.get('run') ?? '');
+        return json(res, 200, result);
+      } catch (error) {
+        if (error instanceof DataQueryError)
+          return json(res, 400, { error: error.message });
+        return json(res, 503, {
+          error:
+            'Could not read PostgreSQL. Check the database connection and migrations, then try again.',
+        });
+      }
+    }
     if (url.pathname === '/api/account') {
       const forward = readForward(
         url.searchParams.get('mode'),

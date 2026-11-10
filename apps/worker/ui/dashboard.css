@@ -95,9 +95,23 @@ svg {
   width: 1px;
   background: var(--border);
 }
-.top-caption {
+.top-pages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.top-pages a {
   color: var(--muted);
+  padding: 6px 8px;
+  border-radius: 6px;
   font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.top-pages a:hover,
+.top-pages a[aria-current='page'] {
+  background: #242e20;
+  color: var(--accent);
 }
 .top-status {
   margin-left: auto;
@@ -609,7 +623,6 @@ code {
     gap: 8px;
     font-size: 11px;
   }
-  .top-caption,
   .top-divider {
     display: none;
   }
@@ -631,5 +644,24 @@ code {
   }
   .activity-content {
     height: 235px;
+  }
+}
+
+@media (max-width: 620px) {
+  .top-pages {
+    gap: 1px;
+  }
+  .top-pages a {
+    font-size: 11px;
+    padding-inline: 5px;
+  }
+}
+@media (max-width: 480px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+  .top-pages {
+    order: 1;
+    flex-basis: 100%;
   }
 }

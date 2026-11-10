@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Explore Solemn's saved PostgreSQL records."
+    />
+    <title>Solemn · Data explorer</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+    <link rel="stylesheet" href="/data.css" />
+    <script type="module" src="/data.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Solemn control panel">
+        <span class="brand-icon"
+          ><svg aria-hidden="true" viewBox="0 0 24 24">
+            <path
+              d="M5 7.5 12 4l7 3.5-7 3.5L5 7.5Zm0 4.5 7 3.5 7-3.5M5 16.5l7 3.5 7-3.5"
+            /></svg
+        ></span>
+        <span>SOLEMN</span>
+      </a>
+      <span class="top-divider"></span>
+      <nav class="top-pages" aria-label="Workspace">
+        <a href="/">Control panel</a>
+        <a href="/data" aria-current="page">Data explorer</a>
+      </nav>
+      <div class="top-status"><span class="safe-pill">Read-only</span></div>
+    </header>
+
+    <main class="data-layout">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow"><i></i> SOLEMN / POSTGRESQL</p>
+        <h1 id="page-title">Data explorer</h1>
+        <p>
+          Browse saved records, see activity over time, and chart paper backtest
+          equity.
+        </p>
+      </section>
+
+      <section class="panel data-filters" aria-label="Data filters">
+        <form id="filters" class="filter-form">
+          <div class="fields">
+            <label for="dataset">Dataset</label>
+            <select id="dataset" disabled></select>
+          </div>
+          <div class="fields" id="id-filter" hidden>
+            <label for="filter" id="filter-label">Identifier</label>
+            <input
+              id="filter"
+              maxlength="128"
+              placeholder="Exact match"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="fields">
+            <label for="from">From (UTC)</label>
+            <input id="from" type="date" />
+          </div>
+          <div class="fields">
+            <label for="through">Through (UTC)</label>
+            <input id="through" type="date" />
+          </div>
+          <div class="filter-actions">
+            <button class="primary" id="apply" type="submit" disabled>
+              Apply filters
+            </button>
+            <button class="secondary" id="reset" type="button" disabled>
+              Reset
+            </button>
+          </div>
+        </form>
+        <p class="data-description" id="dataset-description">
+          Loading saved datasets…
+        </p>
+        <p class="form-error" id="data-error" role="alert" hidden></p>
+      </section>
+
+      <section class="panel data-chart" aria-labelledby="chart-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow" id="chart-kicker">Recorded activity</p>
+            <h2 id="chart-heading">Records by day</h2>
+          </div>
+          <button class="secondary" id="back-to-counts" type="button" hidden>
+            Show record counts
+          </button>
+        </div>
+        <p class="chart-caption" id="chart-caption">
+          Latest 14 days with matching records. Dates use UTC.
+        </p>
+        <div
+          class="chart-viewport"
+          id="chart"
+          tabindex="0"
+          aria-label="Data chart"
+        ></div>
+        <p class="chart-empty" id="chart-empty">Loading chart…</p>
+      </section>
+
+      <section class="panel data-records" aria-labelledby="records-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Saved records</p>
+            <h2 id="records-heading">Tokens</h2>
+          </div>
+          <span class="chip" id="result-label" role="status">Loading</span>
+        </div>
+        <div
+          id="record-scroll"
+          class="record-scroll"
+          tabindex="0"
+          aria-label="Database records"
+          hidden
+        >
+          <table id="records">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="chart-empty" id="records-empty">Loading records…</p>
+        <div class="record-footer">
+          <p id="record-note">Timestamps shown in UTC.</p>
+          <div class="pagination">
+            <button class="secondary" id="previous" type="button" disabled>
+              Previous
+            </button>
+            <button class="secondary" id="next" type="button" disabled>
+              Next
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
