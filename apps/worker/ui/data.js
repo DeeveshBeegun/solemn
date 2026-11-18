@@ -268,7 +268,7 @@ function columnLabel(key) {
   );
 }
 
-function renderRows(rows) {
+function renderColumns() {
   const table = get('records');
   const chartable = dataset.key === 'backtests';
   const header = document.createElement('tr');
@@ -278,10 +278,46 @@ function renderRows(rows) {
   ]) {
     const th = document.createElement('th');
     th.scope = 'col';
-    th.textContent = columnLabel(column);
+    const label = columnLabel(column);
+    const heading = document.createElement('span');
+    heading.textContent = label;
+    th.append(heading);
+    if (dataset.columns.includes(column)) {
+      const categorical = dataset.selectColumns.includes(column);
+      const input = document.createElement(categorical ? 'select' : 'input');
+      if (categorical) {
+        const all = document.createElement('option');
+        all.value = '';
+        all.textContent = 'All values';
+        input.append(all);
+        input.disabled = true;
+        input.addEventListener('change', apply);
+      } else {
+        input.type = 'text';
+        input.maxLength = 128;
+        input.placeholder =
+          column.endsWith('At') ||
+          column === 'timestamp' ||
+          column === 'validUntil'
+            ? 'YYYY-MM-DD…'
+            : 'Contains…';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+      }
+      input.dataset.column = column;
+      input.setAttribute('form', 'filters');
+      input.setAttribute('aria-label', 'Filter ' + label.toLowerCase());
+      input.setAttribute('aria-describedby', 'column-filter-help');
+      th.append(input);
+    }
     header.append(th);
   }
   table.tHead.replaceChildren(header);
+}
+
+function renderRows(rows) {
+  const table = get('records');
+  const chartable = dataset.key === 'backtests';
   table.tBodies[0].replaceChildren(
     ...rows.map((row) => {
       const tr = document.createElement('tr');
@@ -316,7 +352,6 @@ function renderRows(rows) {
       return tr;
     }),
   );
-  get('record-scroll').hidden = !rows.length;
   get('records-empty').hidden = Boolean(rows.length);
   if (!rows.length) set('records-empty', 'No records match these filters.');
   const offset = (pages.length - 1) * 50;
@@ -347,6 +382,27 @@ async function loadPage(page) {
       timeline = result.timeline;
       if (chartView === 'counts') renderTimeline();
     }
+    for (const [key, values] of Object.entries(result.columnOptions)) {
+      const select = get('records').tHead.querySelector(
+        '[data-column="' + key + '"]',
+      );
+      const selected = select.value;
+      const options = [
+        '',
+        ...values,
+        ...(!values.includes(selected) && selected ? [selected] : []),
+      ];
+      select.replaceChildren(
+        ...options.map((value) => {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = value || 'All values';
+          return option;
+        }),
+      );
+      select.value = selected;
+      select.disabled = false;
+    }
     renderRows(result.rows);
     get('previous').disabled = pages.length === 1;
     get('next').disabled = !next;
@@ -354,7 +410,7 @@ async function loadPage(page) {
     if (controller.signal.aborted) return;
     error(cause.message);
     set('result-label', 'Unavailable');
-    get('record-scroll').hidden = true;
+    get('records').tBodies[0].replaceChildren();
     get('records-empty').hidden = false;
     set('records-empty', 'Records could not be loaded.');
     if (chartView === 'counts') {
@@ -372,9 +428,13 @@ function apply() {
     through: get('through').value,
   };
   if (dataset.filterLabel) applied.filter = get('filter').value;
+  for (const input of get('records').tHead.querySelectorAll('[data-column]')) {
+    if (input.value.trim())
+      applied['column.' + input.dataset.column] = input.value.trim();
+  }
   timeline = undefined;
   renderTimeline();
-  get('record-scroll').hidden = true;
+  get('records').tBodies[0].replaceChildren();
   get('records-empty').hidden = false;
   set('records-empty', 'Loading records…');
   void loadPage([null]);
@@ -387,6 +447,8 @@ function selectDataset() {
   if (dataset.filterLabel) set('filter-label', dataset.filterLabel);
   set('dataset-description', dataset.description);
   set('records-heading', dataset.label);
+  renderColumns();
+  get('record-scroll').hidden = false;
   apply();
 }
 
@@ -397,6 +459,13 @@ get('filters').addEventListener('submit', (event) => {
 get('dataset').addEventListener('change', selectDataset);
 get('reset').addEventListener('click', () => {
   for (const field of ['filter', 'from', 'through']) get(field).value = '';
+  for (const input of get('records').tHead.querySelectorAll('[data-column]'))
+    input.value = '';
+  apply();
+});
+get('clear-columns').addEventListener('click', () => {
+  for (const input of get('records').tHead.querySelectorAll('[data-column]'))
+    input.value = '';
   apply();
 });
 get('previous').addEventListener(
@@ -418,7 +487,13 @@ try {
     option.textContent = entry.label;
     get('dataset').append(option);
   }
-  for (const control of ['dataset', 'apply', 'reset'])
+  for (const control of [
+    'dataset',
+    'apply',
+    'reset',
+    'apply-columns',
+    'clear-columns',
+  ])
     get(control).disabled = false;
   selectDataset();
 } catch (cause) {

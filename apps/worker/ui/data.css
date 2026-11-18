@@ -117,6 +117,37 @@ thead {
   background: var(--inset);
   color: var(--muted);
 }
+.column-filter-tools {
+  padding: 0 20px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  justify-content: space-between;
+}
+.column-filter-tools p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  flex: 1 1 300px;
+}
+thead input,
+thead select {
+  display: block;
+  width: 100%;
+  min-width: 155px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #414846;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+thead input::placeholder {
+  color: var(--quiet);
+}
 th,
 td {
   padding: 11px 13px;

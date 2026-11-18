@@ -2,11 +2,13 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { ForwardOwnershipConflict } from './forwardOwnership.js';
+import { startDatabaseStorageMonitor } from './storageRetention.js';
 import * as schema from './schema.js';
 
 export function createDatabase(
   databaseUrl: string,
   onIdleError: (error: Error) => void = () => undefined,
+  options: { storageMaintenance?: boolean } = {},
 ) {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
@@ -17,6 +19,10 @@ export function createDatabase(
     options: '-c timezone=UTC',
   });
   pool.on('error', onIdleError);
+  const storage =
+    options.storageMaintenance === false
+      ? undefined
+      : startDatabaseStorageMonitor(pool);
   return {
     db: drizzle(pool, { schema }),
     pool,
@@ -47,8 +53,11 @@ export function createDatabase(
     },
     async verify() {
       await pool.query('SELECT 1');
+      await storage?.check();
     },
     async close() {
+      await storage?.check();
+      await storage?.stop();
       await pool.end();
     },
   };

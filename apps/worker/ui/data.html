@@ -111,6 +111,26 @@
           </div>
           <span class="chip" id="result-label" role="status">Loading</span>
         </div>
+        <div class="column-filter-tools">
+          <p id="column-filter-help">
+            Choose an exact value from a dropdown or enter text to match other
+            columns. All filters apply together. Dates use YYYY-MM-DD in UTC.
+          </p>
+          <div class="filter-actions">
+            <button
+              class="secondary"
+              id="apply-columns"
+              type="submit"
+              form="filters"
+              disabled
+            >
+              Apply column filters
+            </button>
+            <button class="secondary" id="clear-columns" type="button" disabled>
+              Clear column filters
+            </button>
+          </div>
+        </div>
         <div
           id="record-scroll"
           class="record-scroll"

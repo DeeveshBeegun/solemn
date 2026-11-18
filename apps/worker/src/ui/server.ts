@@ -22,6 +22,7 @@ import {
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 dotenv({ path: resolve(root, '.env'), quiet: true });
+let storageDatabase: ReturnType<typeof createDatabase> | undefined;
 const port = Number(process.env.SOLEMN_UI_PORT ?? '4173');
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error('SOLEMN_UI_PORT must be a port number from 1 to 65535');
@@ -278,6 +279,8 @@ function capture(run: Job, line: string) {
       'mode',
       'cursor',
       'trackedTokens',
+      'deletedRows',
+      'usedBytes',
       'closedPositions',
       'openPositions',
       'realizedNetPnlUsd',
@@ -614,13 +617,19 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   );
   process.exitCode = 1;
 });
-server.listen(port, '127.0.0.1', () =>
-  console.info(`Solemn dashboard: ${origin}`),
-);
+server.listen(port, '127.0.0.1', () => {
+  storageDatabase = process.env.DATABASE_URL
+    ? createDatabase(process.env.DATABASE_URL)
+    : undefined;
+  console.info(`Solemn dashboard: ${origin}`);
+});
 function close() {
   closing = true;
   stop();
   server.close();
+  void storageDatabase?.close().catch(() => {
+    console.error('Solemn storage monitor could not finish shutdown');
+  });
 }
 process.once('SIGTERM', close);
 process.once('SIGINT', close);

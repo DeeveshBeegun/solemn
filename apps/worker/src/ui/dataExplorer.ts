@@ -1,4 +1,15 @@
-import { and, count, desc, eq, gte, lt, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  ilike,
+  lt,
+  lte,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
 import {
   backtestEquitySnapshots,
@@ -21,11 +32,13 @@ type Dataset = {
   date: AnyPgColumn;
   id: AnyPgColumn;
   columns: Record<string, AnyPgColumn>;
+  selectColumns: string[];
   filter?: { label: string; column: AnyPgColumn; uuid?: true };
 };
 const datasets = {
   tokens: {
     label: 'Tokens',
+    selectColumns: ['source', 'riskStatus', 'migrationStatus'],
     description:
       'Token metadata, migration state, and the latest risk status. Ordered by discovery time.',
     table: tokens,
@@ -44,6 +57,7 @@ const datasets = {
   },
   market: {
     label: 'Market events',
+    selectColumns: ['eventType', 'source'],
     description:
       'Scanner observations saved from market feeds. Ordered by ingestion time.',
     table: marketEvents,
@@ -60,6 +74,7 @@ const datasets = {
   },
   risk: {
     label: 'Risk assessments',
+    selectColumns: ['status'],
     description:
       'Stored token risk checks and their validity windows. Ordered by assessment time.',
     table: tokenRiskAssessments,
@@ -76,6 +91,7 @@ const datasets = {
   },
   decisions: {
     label: 'Strategy decisions',
+    selectColumns: ['outcome', 'mode'],
     description:
       'Recorded outcomes from the strategy, including decisions that did not generate a signal. Ordered by market timestamp.',
     table: strategyDecisions,
@@ -92,6 +108,7 @@ const datasets = {
   },
   portfolios: {
     label: 'Paper portfolios',
+    selectColumns: ['dataMode', 'status'],
     description:
       'Persisted paper accounts and cash balances. Ordered by last update.',
     table: paperPortfolios,
@@ -109,6 +126,7 @@ const datasets = {
   },
   trades: {
     label: 'Paper fills',
+    selectColumns: ['side'],
     description:
       'Simulated executions from paper accounts, including replay and backtests. Ordered by execution timestamp.',
     table: trades,
@@ -126,6 +144,7 @@ const datasets = {
   },
   forward: {
     label: 'Forward events',
+    selectColumns: ['kind'],
     description:
       'Recorded forward worker activity. Ordered by database recording time, with the event timestamp shown separately.',
     table: forwardRuntimeEvents,
@@ -146,6 +165,7 @@ const datasets = {
   },
   backtests: {
     label: 'Backtest runs',
+    selectColumns: ['status'],
     description:
       'Saved backtest runs and their execution status. Select a run to chart its stored paper equity.',
     table: backtestRuns,
@@ -168,6 +188,7 @@ export const dataCatalog = Object.entries<Dataset>(datasets).map(
     label: dataset.label,
     description: dataset.description,
     columns: Object.keys(dataset.columns),
+    selectColumns: dataset.selectColumns,
     filterLabel: dataset.filter?.label,
   }),
 );
@@ -258,6 +279,35 @@ export async function readDataset(params: URLSearchParams) {
         '.',
     );
   const cursor = readCursor(params.get('cursor'), key !== 'tokens');
+  const columnConditions = [];
+  for (const [parameter, value] of params) {
+    if (!parameter.startsWith('column.')) continue;
+    const key = parameter.slice('column.'.length);
+    if (
+      !Object.hasOwn(dataset.columns, key) ||
+      value.length > 128 ||
+      value.includes('\0') ||
+      params.getAll(parameter).length !== 1
+    )
+      throw new DataQueryError(
+        'Use a valid column filter of up to 128 characters.',
+      );
+    const text = value.trim();
+    if (!text) continue;
+    const column = dataset.columns[key]!;
+    if (dataset.selectColumns.includes(key)) {
+      columnConditions.push(
+        eq(sql`lower(cast(${column} as text))`, text.toLowerCase()),
+      );
+      continue;
+    }
+    const searchable =
+      column.columnType === 'PgTimestampString'
+        ? sql`to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
+        : sql`cast(${column} as text)`;
+    const escaped = text.replace(/[\\%_]/g, '\\$&');
+    columnConditions.push(ilike(searchable, `%${escaped}%`));
+  }
   const where = and(
     from ? gte(dataset.date, from.toISOString()) : undefined,
     through
@@ -267,6 +317,7 @@ export async function readDataset(params: URLSearchParams) {
         )
       : undefined,
     filter && dataset.filter ? eq(dataset.filter.column, filter) : undefined,
+    ...columnConditions,
   );
 
   return readDatabase(async (db) => {
@@ -310,7 +361,29 @@ export async function readDataset(params: URLSearchParams) {
             .limit(14)
         ).reverse();
 
+    const columnOptions: Record<string, string[]> = {};
+    if (!cursor) {
+      for (const key of dataset.selectColumns) {
+        const column = dataset.columns[key]!;
+        const stored = await db
+          .selectDistinct({ value: column })
+          .from(dataset.table)
+          .orderBy(column);
+        columnOptions[key] = [
+          ...new Set([
+            ...(column.enumValues ?? []),
+            ...stored
+              .map(({ value }) => value)
+              .filter(
+                (value): value is string =>
+                  typeof value === 'string' && value.length > 0,
+              ),
+          ]),
+        ].sort();
+      }
+    }
     return {
+      columnOptions,
       rows: rows.slice(0, pageSize).map(({ cursorDate, cursorId, ...row }) => ({
         ...row,
         // Use ISO timestamps in the browser while retaining DB precision in the cursor.

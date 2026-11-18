@@ -11,3 +11,4 @@ export * from './historyRepository.js';
 export * from './backtestRepository.js';
 export * from './swapAuditRepository.js';
 export * from './forwardOwnership.js';
+export { enforceDatabaseStorage } from './storageRetention.js';

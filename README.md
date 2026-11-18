@@ -92,7 +92,29 @@ The panel runs one process at a time. **Process log** shows the current or last 
 
 Open **Data explorer** in the header to browse saved tokens, market events, risk assessments, strategy decisions, paper portfolios, fills, forward events, and backtest runs. Filter by UTC dates and, where offered, an exact token mint or portfolio ID. The bar chart shows the latest 14 days with matching records. In **Backtest runs**, select **View equity** to chart the latest 250 saved snapshots for that run. Gaps mark unavailable valuations. Explorer queries are read-only.
 
+Each data column has a filter beneath its heading. Category columns such as status, mode, source, and side offer dropdowns with exact values from the schema and stored records. Selecting a value applies the filters immediately. Choose **All values** to remove that column’s restriction. For other columns, enter text and press Enter or select **Apply column filters**. Text matching ignores case and treats the text literally. All column filters combine with the date and exact-ID filters across the database, including subsequent pages and daily chart counts. For timestamp columns, enter a UTC date such as `2026-11-14` or part of an ISO timestamp. **Clear column filters** clears the column fields, while **Reset** clears all filters. Selecting another dataset clears its column filters.
+
 Press Ctrl+C in the launcher terminal to close the panel and request shutdown of its process. PostgreSQL remains available. The dashboard binds to loopback only. Use `SOLEMN_UI_PORT=4180 pnpm ui` if the default port is in use. Changes to `.env` take effect when you restart the launcher.
+
+## Database storage cap and automatic retention
+
+Migrations install a **5 GB write safeguard** on all current Solemn tables. The threshold is **5,000,000,000 bytes**, measured with PostgreSQL's `pg_database_size`. Each running Solemn process checks storage on connection startup and every minute. At the threshold, one process acquires a database-wide maintenance lock and removes the oldest eligible history in batches until usage falls below **4.5 GB**. Cleanup continues across maintenance passes and restarts.
+
+Automatic removal covers records at least **24 hours old**:
+
+- Completed, failed, or cancelled backtests with closed positions and zero reserved cash. Their linked portfolio, ledger, fills, execution evidence, evaluation records, and unshared strategy history are removed together.
+- Stopped forward accounts with closed positions, zero reserved cash, no pending replay intents, and no active worker ownership. Their related history is removed together.
+- Published backtest datasets with no remaining backtest references.
+- Discovery events and unreferenced market snapshots for tokens without open positions, plus closed scanner gaps.
+- Unused token metadata and its old risk assessments, after retained market records, strategy evidence, historical datasets, and active risk requests no longer reference the token.
+
+Active workers, running backtests, open positions, uncertain execution state, future evaluation periods, and recent data are protected. Standalone fixture accounts without a completed-run or stopped-forward marker are also retained. If protected data prevents enough space being reclaimed, the safeguard rejects inserts and updates with SQLSTATE `53100` and `SOLEMN_DATABASE_STORAGE_LIMIT_REACHED`. Existing records remain readable. Collection and shutdown auditing can fail while writes are blocked.
+
+Deleting rows alone usually leaves their disk allocation in PostgreSQL. Maintenance runs `VACUUM FULL` on affected tables to reclaim it. This can briefly block access to those tables and requires extra free disk space. A durable queue resumes unfinished compaction before more data is removed. Foreign keys remain enforced. Immutable-record triggers are restored within the same transaction that removes a complete old bundle, including if deletion fails.
+
+Run `pnpm db:migrate` or **Database setup** in the control panel, then restart the UI and any workers to enable the monitor. New databases receive the policy through migrations. The policy and cleanup status are stored in `public.solemn_storage_policy`. Future migrations that add tables must install both storage guard triggers.
+
+The safeguard includes allocated tables and indexes. Physical disk usage can exceed the threshold because of concurrent writes, failed operations, WAL, temporary files, and PostgreSQL maintenance. A strict physical quota requires a separately provisioned filesystem. Files exported to `reports/` are outside the database cap.
 
 ## Installation and first run
 
