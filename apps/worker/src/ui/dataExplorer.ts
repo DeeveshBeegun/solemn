@@ -241,7 +241,7 @@ function readCursor(
   throw new DataQueryError('The page cursor is invalid. Refresh the results.');
 }
 
-async function readDatabase<T>(read: (db: Database) => Promise<T>) {
+export async function readDatabase<T>(read: (db: Database) => Promise<T>) {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is required');
   const db = createDatabase(url);

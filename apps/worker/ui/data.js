@@ -335,6 +335,16 @@ function renderRows(rows) {
           stamp.dateTime = value;
           stamp.textContent = dateTime.format(new Date(value));
           td.append(stamp);
+        } else if (column === 'mint') {
+          const link = document.createElement('a');
+          const params = { mint: value };
+          if (row.portfolioId) params.context = 'portfolio:' + row.portfolioId;
+          else if (row.runId) params.context = 'strategy:' + row.runId;
+          link.href = '/lifecycle?' + new URLSearchParams(params);
+          link.className = 'record-link';
+          link.textContent = value;
+          link.title = 'View this token’s lifecycle';
+          td.append(link);
         } else td.textContent = value;
         tr.append(td);
       }

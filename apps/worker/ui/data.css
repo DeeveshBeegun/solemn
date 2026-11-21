@@ -205,3 +205,8 @@ td[data-muted='true'] {
     flex-basis: 100%;
   }
 }
+
+.record-link {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}

@@ -96,6 +96,14 @@ Each data column has a filter beneath its heading. Category columns such as stat
 
 Press Ctrl+C in the launcher terminal to close the panel and request shutdown of its process. PostgreSQL remains available. The dashboard binds to loopback only. Use `SOLEMN_UI_PORT=4180 pnpm ui` if the default port is in use. Changes to `.env` take effect when you restart the launcher.
 
+## Token lifecycle
+
+Open **Token lifecycle** in the header, or select a mint link in **Data explorer**. Search by name, symbol, or mint. **With paper activity** narrows the list to tokens with recorded orders or positions.
+
+Choose a lifecycle context to inspect a specific paper account or strategy run, or select **Discovery and risk history** for scanner evidence. Context labels distinguish synthetic backtests, historical backtests, forward replay, and live evidence. Each context has discovery, risk, strategy, execution, and position stage cards. Select a card or the stage dropdown to filter its timeline. **Load more events** continues chronologically through the saved records. **View recorded evidence** expands reasons, strategy features, order details, fees, and identifiers.
+
+The outcome panel describes recorded paper positions, including closed, open, and blocked exits. Realized paper P&L follows the recorded execution uncertainty flags. History can be refreshed with **Refresh history**. Times use UTC and each selected source's clock. Storage retention can remove earlier records, and some tokens have only discovery evidence. Paper position closure describes the account's recorded trading outcome. The context picker shows up to 200 recent contexts, and direct account links can open an older one.
+
 ## Database storage cap and automatic retention
 
 Migrations install a **5 GB write safeguard** on all current Solemn tables. The threshold is **5,000,000,000 bytes**, measured with PostgreSQL's `pg_database_size`. Each running Solemn process checks storage on connection startup and every minute. At the threshold, one process acquires a database-wide maintenance lock and removes the oldest eligible history in batches until usage falls below **4.5 GB**. Cleanup continues across maintenance passes and restarts.

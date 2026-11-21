@@ -20,6 +20,12 @@ import {
   readEquity,
 } from './dataExplorer.js';
 
+import {
+  findLifecycleTokens,
+  readTokenLifecycle,
+  TokenNotFound,
+} from './tokenLifecycle.js';
+
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 dotenv({ path: resolve(root, '.env'), quiet: true });
 let storageDatabase: ReturnType<typeof createDatabase> | undefined;
@@ -37,6 +43,9 @@ const assets = new Map([
   ['/data', ['data.html', 'text/html; charset=utf-8']],
   ['/data.css', ['data.css', 'text/css; charset=utf-8']],
   ['/data.js', ['data.js', 'text/javascript; charset=utf-8']],
+  ['/lifecycle', ['lifecycle.html', 'text/html; charset=utf-8']],
+  ['/lifecycle.css', ['lifecycle.css', 'text/css; charset=utf-8']],
+  ['/lifecycle.js', ['lifecycle.js', 'text/javascript; charset=utf-8']],
 ]);
 const accountPattern = /^[a-zA-Z0-9_-]{1,50}$/;
 const configuredAccount = process.env.FORWARD_ACCOUNT ?? 'week8';
@@ -539,19 +548,21 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, { token, defaultAccount, job });
     if (url.pathname === '/api/data/catalog')
       return json(res, 200, dataCatalog);
-    if (
-      url.pathname === '/api/data/records' ||
-      url.pathname === '/api/data/equity'
-    ) {
+    const readers: Record<string, () => Promise<unknown>> = {
+      '/api/data/records': () => readDataset(url.searchParams),
+      '/api/data/equity': () => readEquity(url.searchParams.get('run') ?? ''),
+      '/api/lifecycle/tokens': () => findLifecycleTokens(url.searchParams),
+      '/api/lifecycle/token': () => readTokenLifecycle(url.searchParams),
+    };
+    const reader = readers[url.pathname];
+    if (Object.hasOwn(readers, url.pathname) && reader) {
       try {
-        const result =
-          url.pathname === '/api/data/records'
-            ? await readDataset(url.searchParams)
-            : await readEquity(url.searchParams.get('run') ?? '');
-        return json(res, 200, result);
+        return json(res, 200, await reader());
       } catch (error) {
         if (error instanceof DataQueryError)
-          return json(res, 400, { error: error.message });
+          return json(res, error instanceof TokenNotFound ? 404 : 400, {
+            error: error.message,
+          });
         return json(res, 503, {
           error:
             'Could not read PostgreSQL. Check the database connection and migrations, then try again.',
