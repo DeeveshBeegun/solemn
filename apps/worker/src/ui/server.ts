@@ -26,6 +26,8 @@ import {
   TokenNotFound,
 } from './tokenLifecycle.js';
 
+import { readTokenTrading } from './tokenTrading.js';
+
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 dotenv({ path: resolve(root, '.env'), quiet: true });
 let storageDatabase: ReturnType<typeof createDatabase> | undefined;
@@ -43,6 +45,9 @@ const assets = new Map([
   ['/data', ['data.html', 'text/html; charset=utf-8']],
   ['/data.css', ['data.css', 'text/css; charset=utf-8']],
   ['/data.js', ['data.js', 'text/javascript; charset=utf-8']],
+  ['/trading', ['trading.html', 'text/html; charset=utf-8']],
+  ['/trading.css', ['trading.css', 'text/css; charset=utf-8']],
+  ['/trading.js', ['trading.js', 'text/javascript; charset=utf-8']],
   ['/lifecycle', ['lifecycle.html', 'text/html; charset=utf-8']],
   ['/lifecycle.css', ['lifecycle.css', 'text/css; charset=utf-8']],
   ['/lifecycle.js', ['lifecycle.js', 'text/javascript; charset=utf-8']],
@@ -551,6 +556,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const readers: Record<string, () => Promise<unknown>> = {
       '/api/data/records': () => readDataset(url.searchParams),
       '/api/data/equity': () => readEquity(url.searchParams.get('run') ?? ''),
+      '/api/trading/token': () => readTokenTrading(url.searchParams),
       '/api/lifecycle/tokens': () => findLifecycleTokens(url.searchParams),
       '/api/lifecycle/token': () => readTokenLifecycle(url.searchParams),
     };

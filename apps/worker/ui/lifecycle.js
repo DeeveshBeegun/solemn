@@ -226,6 +226,9 @@ function renderOutcome(data) {
 }
 
 function renderHeader(data) {
+  get('view-trading').href =
+    '/trading?' +
+    new URLSearchParams({ mint: data.token.mint, context: data.context.key });
   const token = data.token;
   text(
     'token-title',

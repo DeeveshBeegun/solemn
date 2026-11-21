@@ -29,6 +29,7 @@ import {
   findLifecycleTokens,
   TokenNotFound,
 } from '../src/ui/tokenLifecycle.js';
+import { readTokenTrading } from '../src/ui/tokenTrading.js';
 import { DataQueryError } from '../src/ui/dataExplorer.js';
 import { event, token, snapshot, signal } from '../../../tests/fixtures.js';
 
@@ -313,4 +314,270 @@ it('keeps later risk-status changes even when the underlying assessment is reuse
     data.events.find((item) => item.id === 'context-risk:' + latest.id)?.details
       .status,
   ).toBe('UNKNOWN');
+});
+
+it('charts the selected replay and reconciles full-window paper fills, fees and realized P&L', async () => {
+  const data = await readTokenTrading(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'portfolio:' + portfolioA,
+    }),
+  );
+  expect(data.context.portfolioId).toBe(portfolioA);
+  expect(data.source).toBe('candles');
+  expect(data.candles.length).toBeGreaterThan(1);
+  expect(data.candles.length).toBeLessThanOrEqual(481);
+  const expected = (
+    await database.pool.query(
+      `SELECT count(*)::text AS n,sum(fees_usd)::text AS fees FROM trades WHERE portfolio_id=$1 AND token_mint=$2`,
+      [portfolioA, closedMint],
+    )
+  ).rows[0];
+  expect(data.totals.fills).toBe(expected.n);
+  expect(Number(data.totals.feesUsd)).toBe(Number(expected.fees));
+  const ids = (
+    await database.pool.query(
+      'SELECT id FROM trades WHERE portfolio_id=$1 AND token_mint=$2',
+      [portfolioA, closedMint],
+    )
+  ).rows.map((r) => r.id);
+  expect(data.fills.map((f) => f.id).sort()).toEqual(ids.sort());
+  expect(data.markers.every((m) => ids.includes(m.id))).toBe(true);
+  expect(data.candles.some((c) => c.close !== null)).toBe(true);
+  const lifecycle = await readTokenLifecycle(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'portfolio:' + portfolioA,
+    }),
+  );
+  expect(data.positions.realizedPnlUsd).toBe(
+    lifecycle.positions.realizedPnlUsd,
+  );
+});
+
+it('uses the saved event clock for ranges and filters the fills table independently of totals', async () => {
+  const data = await readTokenTrading(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'portfolio:' + portfolioA,
+      range: '1h',
+      side: 'BUY',
+    }),
+  );
+  expect(Date.parse(data.window.through!) - Date.parse(data.window.from!)).toBe(
+    3600000,
+  );
+  expect(data.fills.length).toBeGreaterThan(0);
+  expect(data.fills.every((f) => f.side === 'BUY')).toBe(true);
+  expect(Number(data.totals.sells)).toBeGreaterThan(0);
+  expect(
+    data.candles.every(
+      (p) =>
+        Date.parse(p.at) >= Date.parse(data.window.from!) &&
+        Date.parse(p.at) <= Date.parse(data.window.through!),
+    ),
+  ).toBe(true);
+  const resolved = await readTokenTrading(
+    new URLSearchParams({ mint: closedMint, context: 'strategy:' + strategyA }),
+  );
+  expect(resolved.context.portfolioId).toBe(portfolioA);
+});
+
+it('keeps discovery-only tokens honest and never borrows another run’s market prices', async () => {
+  const data = await readTokenTrading(
+    new URLSearchParams({ mint: closedMint, context: 'discovery' }),
+  );
+  expect(data.source).toBe('none');
+  expect(data.candles).toEqual([]);
+  expect(data.fills).toEqual([]);
+  expect(data.totals.fills).toBe('0');
+  expect(data.window.through).toBeNull();
+  const legacy = await readTokenTrading(
+    new URLSearchParams({ mint: token.mintAddress, context: 'legacy' }),
+  );
+  expect(legacy.candles).toEqual([]);
+});
+
+it('preserves gaps and unavailable USD values in chart intervals', async () => {
+  const params = new URLSearchParams({
+    mint: closedMint,
+    context: 'portfolio:' + portfolioA,
+  });
+  const before = await readTokenTrading(params);
+  const candle = (
+    await database.pool.query(
+      'SELECT id FROM market_candles WHERE run_id=$1 AND token_mint=$2 AND pool_address=$3 ORDER BY end_time,id LIMIT 1',
+      [strategyA, closedMint, before.pool],
+    )
+  ).rows[0];
+  await database.pool.query(
+    `UPDATE market_candles SET payload=jsonb_set(payload,'{complete}','false'::jsonb) WHERE run_id=$1 AND id=$2`,
+    [strategyA, candle.id],
+  );
+  const after = await readTokenTrading(params);
+  expect(after.candles[0]?.close).toBeNull();
+  expect(after.candles[0]?.volumeUsd).toBeNull();
+  await database.pool.query(
+    `UPDATE market_candles SET payload=jsonb_set(payload,'{complete}','true'::jsonb) WHERE run_id=$1 AND id=$2`,
+    [strategyA, candle.id],
+  );
+});
+
+it('keeps unresolved exits open and suppresses unreliable realized P&L', async () => {
+  const params = new URLSearchParams({
+    mint: blockedMint,
+    context: 'portfolio:' + portfolioA,
+  });
+  const data = await readTokenTrading(params);
+  expect(Number(data.positions.blocked)).toBeGreaterThan(0);
+  expect(Number(data.positions.open)).toBeGreaterThan(0);
+  const command = {
+    type: 'HALT' as const,
+    id: randomUUID(),
+    at: new Date().toISOString(),
+    reason: 'Execution uncertainty test',
+  };
+  await createPaperRepository(database.db).transact(
+    portfolioA,
+    command,
+    (state) => ({
+      state: {
+        ...state,
+        executionUncertain: true,
+        status: 'HALTED',
+        haltReason: command.reason,
+        asOf: command.at,
+      },
+      postings: [],
+      orders: [],
+      result: {
+        outcome: 'HALTED',
+        reasons: [command.reason],
+        orderId: null,
+        positionId: null,
+      },
+    }),
+  );
+  const uncertain = await readTokenTrading(params);
+  expect(uncertain.positions.realizedPnlUsd).toBeNull();
+});
+
+it('rejects invalid trading filters, cursors and unavailable pools', async () => {
+  for (const extra of [
+    { range: 'invalid' },
+    { side: 'SHORT' },
+    { pool: 'invalid' },
+    { cursor: 'invalid' },
+    { context: 'portfolio:invalid' },
+    { pool: '11111111111111111111111111111111' },
+  ]) {
+    await expect(
+      readTokenTrading(
+        new URLSearchParams({
+          mint: closedMint,
+          context: 'portfolio:' + portfolioA,
+          ...extra,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(DataQueryError);
+  }
+});
+
+it('paginates same-timestamp legacy fills at full database precision without dropping rows', async () => {
+  const ids: string[] = [];
+  for (let n = 0; n < 61; n++) {
+    const id = randomUUID(),
+      order = randomUUID();
+    ids.push(id);
+    await database.pool.query(
+      `INSERT INTO orders(id,token_mint,side,requested_quantity,status,created_at,submitted_at,executed_at,estimated_fees_usd,actual_fees_usd)
+      VALUES($1,$2,'BUY',1,'FILLED','2020-01-01T00:00:00.123456Z','2020-01-01T00:00:00.123456Z','2020-01-01T00:00:00.123456Z',0,0)`,
+      [order, token.mintAddress],
+    );
+    await database.pool.query(
+      `INSERT INTO trades(id,order_id,token_mint,side,executed_quantity,execution_price_usd,fees_usd,timestamp)
+      VALUES($1,$2,$3,'BUY',1,2,0,'2020-01-01T00:00:00.123456Z')`,
+      [id, order, token.mintAddress],
+    );
+  }
+  const params = { mint: token.mintAddress, context: 'legacy' };
+  const first = await readTokenTrading(new URLSearchParams(params));
+  expect(first.fills).toHaveLength(50);
+  expect(first.next).not.toBeNull();
+  expect(Number(first.totals.buyNotionalUsd)).toBe(122);
+  const second = await readTokenTrading(
+    new URLSearchParams({ ...params, cursor: first.next! }),
+  );
+  expect(second.fills).toHaveLength(11);
+  expect(second.next).toBeNull();
+  expect([...first.fills, ...second.fills].map((f) => f.id).sort()).toEqual(
+    ids.sort(),
+  );
+  expect(first.markers).toHaveLength(61);
+});
+
+it('separates market pools and exposes only reliable, projected observation data', async () => {
+  const run = randomUUID();
+  await database.pool.query(
+    `INSERT INTO strategy_runs(id,mode,strategy_id,strategy_version,config_hash,risk_policy_hash,config)
+    SELECT $1,mode,strategy_id,strategy_version,config_hash,risk_policy_hash,config FROM strategy_runs WHERE id=$2`,
+    [run, strategyA],
+  );
+  const otherPool = '11111111111111111111111111111111';
+  const known = await readTokenTrading(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'portfolio:' + portfolioA,
+    }),
+  );
+  const trade = createBacktestFixture(backtestConfig).events.find(
+    (event) => event.kind === 'TRADE',
+  );
+  if (!trade) throw new Error('Fixture needs a market trade');
+  const payload = trade.data;
+  for (const [n, pool, reliable] of [
+    [0, known.pool, true],
+    [1, otherPool, false],
+  ] as const) {
+    await database.pool.query(
+      `INSERT INTO market_trade_observations(run_id,id,token_mint,pool_address,source,source_event_id,timestamp,received_at,payload)
+      VALUES($1,$2,$3,$4,'TEST',$5,'2020-01-01','2020-01-01',$6)`,
+      [
+        run,
+        randomUUID(),
+        closedMint,
+        pool,
+        String(n),
+        {
+          ...payload,
+          mint: closedMint,
+          poolAddress: pool,
+          usdReliable: reliable,
+          rawPayload: { privateValue: 'DO_NOT_EXPOSE' },
+        },
+      ],
+    );
+  }
+  const good = await readTokenTrading(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'strategy:' + run,
+      pool: known.pool,
+    }),
+  );
+  expect(good.source).toBe('observations');
+  expect(good.pools).toHaveLength(2);
+  expect(good.candles).toHaveLength(1);
+  expect(good.candles[0]?.close).toBe(payload.priceUsd);
+  const unknown = await readTokenTrading(
+    new URLSearchParams({
+      mint: closedMint,
+      context: 'strategy:' + run,
+      pool: otherPool,
+    }),
+  );
+  expect(unknown.candles[0]?.close).toBeNull();
+  expect(unknown.candles[0]?.volumeUsd).toBeNull();
+  expect(JSON.stringify(unknown)).not.toContain('DO_NOT_EXPOSE');
+  expect(unknown.positions.realizedPnlUsd).toBeNull();
 });

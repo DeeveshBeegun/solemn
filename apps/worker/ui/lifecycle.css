@@ -476,3 +476,9 @@
   opacity: 0.6;
   pointer-events: none;
 }
+
+.trading-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}

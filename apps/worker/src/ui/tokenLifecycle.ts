@@ -1,5 +1,6 @@
 import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
 import { tokens } from '@solemn/database';
+import type { Database } from '@solemn/database';
 import { mintAddressSchema } from '@solemn/shared';
 import { DataQueryError, readDatabase } from './dataExplorer.js';
 
@@ -116,10 +117,30 @@ export async function findLifecycleTokens(params: URLSearchParams) {
   });
 }
 
-export async function readTokenLifecycle(params: URLSearchParams) {
+export async function withTokenContext<T>(
+  params: URLSearchParams,
+  read: (
+    db: Database,
+    selection: {
+      token: {
+        mint: string;
+        name: string | null;
+        symbol: string | null;
+        discoveredAt: string;
+        createdAt: string | null;
+        source: string;
+        risk: string;
+        migrationStatus: string;
+        migratedAt: string | null;
+      };
+      context: Context;
+      contexts: Context[];
+      contextsTruncated: boolean;
+    },
+  ) => Promise<T>,
+) {
   const mint = params.get('mint') ?? '';
   const requested = params.get('context') ?? '';
-  const stage = params.get('stage') ?? '';
   if (!mintAddressSchema.safeParse(mint).success)
     throw new DataQueryError('Enter a valid Solana token mint.');
   if (
@@ -133,10 +154,6 @@ export async function readTokenLifecycle(params: URLSearchParams) {
     !uuid.test(requested.slice(requested.indexOf(':') + 1))
   )
     throw new DataQueryError('Select a valid account or strategy run.');
-  if (stage && !lifecycleStages.includes(stage as Stage))
-    throw new DataQueryError('Select a supported lifecycle stage.');
-  const cursor = decodeCursor(params.get('cursor'));
-
   return readDatabase(async (db) => {
     const metadata = (
       await db
@@ -174,13 +191,16 @@ export async function readTokenLifecycle(params: URLSearchParams) {
            OR EXISTS(SELECT 1 FROM orders o WHERE o.portfolio_id=p.id AND o.token_mint=${mint})
            OR EXISTS(SELECT 1 FROM positions x WHERE x.portfolio_id=p.id AND x.token_mint=${mint})
            OR EXISTS(SELECT 1 FROM market_trade_observations x WHERE x.run_id=p.strategy_run_id AND x.token_mint=${mint})
+           OR EXISTS(SELECT 1 FROM market_candles x WHERE x.run_id=p.strategy_run_id AND x.token_mint=${mint})
            OR EXISTS(SELECT 1 FROM forward_runtime_events e WHERE e.portfolio_id=p.id AND e.details->>'mint'=${mint})
         UNION ALL
         SELECT 'strategy:'||r.id::text, r.strategy_id, r.mode::text, 'STRATEGY_RUN',
           null::text, r.id::text, null::text, null::text, r.created_at
         FROM strategy_runs r
         WHERE NOT EXISTS(SELECT 1 FROM paper_portfolios p WHERE p.strategy_run_id=r.id)
-          AND EXISTS(SELECT 1 FROM strategy_decisions d WHERE d.run_id=r.id AND d.token_mint=${mint})
+          AND (EXISTS(SELECT 1 FROM strategy_decisions d WHERE d.run_id=r.id AND d.token_mint=${mint})
+            OR EXISTS(SELECT 1 FROM market_trade_observations o WHERE o.run_id=r.id AND o.token_mint=${mint})
+            OR EXISTS(SELECT 1 FROM market_candles c WHERE c.run_id=r.id AND c.token_mint=${mint}))
       ) contexts
       ORDER BY (key=${requested} OR coalesce("runId"=${requested.startsWith('strategy:') ? requested.slice(9) : ''},false)) DESC,
         updated DESC, key LIMIT 201
@@ -244,6 +264,23 @@ export async function readTokenLifecycle(params: URLSearchParams) {
       throw new DataQueryError(
         'That account has no saved lifecycle for this token.',
       );
+    return read(db, {
+      token: metadata,
+      context,
+      contexts: available,
+      contextsTruncated: contexts.rows.length > 200,
+    });
+  });
+}
+
+export async function readTokenLifecycle(params: URLSearchParams) {
+  const stage = params.get('stage') ?? '';
+  if (stage && !lifecycleStages.includes(stage as Stage))
+    throw new DataQueryError('Select a supported lifecycle stage.');
+  const cursor = decodeCursor(params.get('cursor'));
+  return withTokenContext(params, async (db, selection) => {
+    const { token: metadata, context, contexts: available } = selection;
+    const mint = metadata.mint;
     const { portfolioId, runId, datasetId } = context;
     const discovery = context.key === 'discovery';
     const trading = portfolioId !== null || context.key === 'legacy';
@@ -413,7 +450,7 @@ export async function readTokenLifecycle(params: URLSearchParams) {
       token: metadata,
       context,
       contexts: available,
-      contextsTruncated: contexts.rows.length > 200,
+      contextsTruncated: selection.contextsTruncated,
       stages: summary.rows,
       positions: positionState.rows[0]!,
       positionRows: positionRows.rows,
