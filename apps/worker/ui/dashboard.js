@@ -41,7 +41,7 @@ const modes = {
     kicker: 'Worker services',
     title: 'Configured worker',
     description:
-      'Start the main worker with the standalone services selected in your .env file. It can scan, assess token risk, generate signals, or run fixture paper trading when enabled.',
+      'Start the enabled discovery and risk services, plus free live paper evaluation and execution when configured. Qualified BUY decisions appear in Alerts. Paper fills wait for later fresh public trades and use configured fee, slippage and liquidity limits. Follow simulated positions and P&L in Token trading.',
     button: 'Start worker',
     note: 'Reads local configuration',
   },
@@ -170,6 +170,7 @@ function renderProcess() {
 }
 
 function accountSelection() {
+  if (mode === 'worker') return { mode, account: 'configured' };
   if (mode === 'discovery') return { mode, account: 'live' };
   if (mode === 'replay') return { mode, account: get('account').value.trim() };
   return (
@@ -179,8 +180,20 @@ function accountSelection() {
 
 function renderAccount(selection) {
   const initialized = account && account.status !== 'NOT_INITIALIZED';
-  set('account-label', selection.account || 'Replay account');
-  const label = selection.mode === 'discovery' ? 'Discovery' : 'Replay';
+  set(
+    'account-title',
+    selection.mode === 'worker' ? 'Live paper account' : 'Forward account',
+  );
+  set(
+    'account-label',
+    account?.name ?? (selection.account || 'Replay account'),
+  );
+  const label =
+    selection.mode === 'worker'
+      ? 'Free live paper'
+      : selection.mode === 'discovery'
+        ? 'Discovery'
+        : 'Replay';
   let summary = 'Looking up account…';
   if (!/^[a-zA-Z0-9_-]{1,50}$/.test(selection.account))
     summary = 'Enter a valid account name to see its status.';
@@ -193,9 +206,13 @@ function renderAccount(selection) {
       ' · ' +
       (initialized
         ? humanize(account.status) +
-          (account.workerHeartbeatFresh
-            ? ' · Worker online'
-            : ' · No fresh worker heartbeat')
+          (selection.mode === 'worker'
+            ? account.workerRunning
+              ? ' · Worker running'
+              : ' · Worker stopped'
+            : account.workerHeartbeatFresh
+              ? ' · Worker online'
+              : ' · No fresh worker heartbeat')
         : 'This account has no saved session yet');
   set('account-summary', summary);
   set(
@@ -213,14 +230,23 @@ function renderAccount(selection) {
   );
   set(
     'account-detail',
-    account?.valuationQuality === 'UNCERTAIN'
-      ? 'Valuation uncertain'
-      : account?.cursor != null
-        ? 'Replay cursor ' + account.cursor
-        : account?.lastObservationAt
-          ? 'Last observed ' +
-            shortDate.format(new Date(account.lastObservationAt))
-          : 'No observation shown',
+    selection.mode === 'worker' && account?.availableCashUsd != null
+      ? 'Cash ' +
+          usd.format(Number(account.availableCashUsd)) +
+          ' · ' +
+          (account.valuationQuality === 'UNCERTAIN'
+            ? 'Valuation uncertain'
+            : account.executionModel === 'DECISIONS_ONLY'
+              ? 'Decisions only'
+              : 'Simulated fees and slippage')
+      : account?.valuationQuality === 'UNCERTAIN'
+        ? 'Valuation uncertain'
+        : account?.cursor != null
+          ? 'Replay cursor ' + account.cursor
+          : account?.lastObservationAt
+            ? 'Last observed ' +
+              shortDate.format(new Date(account.lastObservationAt))
+            : 'No observation shown',
   );
   renderActivity();
 }
@@ -298,7 +324,11 @@ async function refreshAccount() {
   if (/^[a-zA-Z0-9_-]{1,50}$/.test(selection.account)) {
     try {
       const params = new URLSearchParams(selection);
-      const result = await api('/api/account?' + params);
+      const result = await api(
+        selection.mode === 'worker'
+          ? '/api/live-paper'
+          : '/api/account?' + params,
+      );
       if (request !== accountRequest) return;
       database = result.database;
       account = result.account;
@@ -329,9 +359,11 @@ async function refreshProcess() {
             data.job?.forward?.mode === 'replay'
               ? data.job.forward.account
               : data.defaultAccount;
+        const selectWorker = !loaded && data.job?.mode === 'worker';
         loaded = true;
         token = data.token;
         job = data.job;
+        if (selectWorker) selectMode('worker');
         if (accountTimer === undefined) void refreshAccount();
       }
     } catch {

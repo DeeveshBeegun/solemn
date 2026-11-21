@@ -78,6 +78,20 @@ export const jupiterSwapBaseUrlSchema = z.url().refine((value) => {
         ['http:', 'https:'].includes(url.protocol)))
   );
 }, 'Expected the Jupiter Swap V2 endpoint or a loopback mock');
+export const geckoTerminalBaseUrlSchema = z.url().refine((value) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    url.pathname === '/api/v2' &&
+    (url.origin === 'https://api.geckoterminal.com' ||
+      (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+        ['http:', 'https:'].includes(url.protocol)))
+  );
+}, 'Expected the keyless GeckoTerminal public API or a loopback mock');
 export function isReadOnlyRpcUrl(url: URL): boolean {
   const host = url.hostname.replace(/\.$/, '');
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(host);
@@ -197,6 +211,19 @@ export const configSchema = z
     FORWARD_MAX_MARKET_DATA_AGE_SECONDS: integerSetting('15', 1, 300),
     FORWARD_DAILY_EVENT_BUDGET: integerSetting('10000', 1, 1000000),
     FORWARD_EQUITY_SNAPSHOT_INTERVAL_SECONDS: integerSetting('60', 1, 600),
+    LIVE_PAPER_DECISIONS_ENABLED: booleanSetting('false'),
+    LIVE_PAPER_EXECUTION_ENABLED: booleanSetting('false'),
+    GECKOTERMINAL_BASE_URL: geckoTerminalBaseUrlSchema.default(
+      'https://api.geckoterminal.com/api/v2',
+    ),
+    FREE_MARKET_REQUEST_INTERVAL_MS: integerSetting('7000', 6500, 60000),
+    FREE_MARKET_POLL_INTERVAL_MS: integerSetting('30000', 15000, 300000),
+    FREE_MARKET_MAX_TRACKED_TOKENS: integerSetting('1', 1, 3),
+    FREE_PAPER_ACCOUNT_NAME: z
+      .string()
+      .min(1)
+      .max(80)
+      .default('live-free-paper'),
     PAPER_TRADING_ENABLED: booleanSetting('false'),
     PAPER_ALLOW_FIXTURE_SIGNALS: booleanSetting('false'),
     PAPER_REPLAY_PATH: z.string().max(4096).default(''),
@@ -292,6 +319,26 @@ export const configSchema = z
 
     const issue = (path: string, message: string) =>
       context.addIssue({ code: 'custom', path: [path], message });
+    if (
+      config.LIVE_PAPER_EXECUTION_ENABLED &&
+      !config.LIVE_PAPER_DECISIONS_ENABLED
+    )
+      issue(
+        'LIVE_PAPER_EXECUTION_ENABLED',
+        'Free paper execution requires live paper decisions',
+      );
+    if (
+      config.LIVE_PAPER_DECISIONS_ENABLED &&
+      (!config.STRATEGY_ENABLED ||
+        !config.PAPER_TRADING_ENABLED ||
+        config.FORWARD_PAPER_ENABLED ||
+        config.PAPER_REPLAY_PATH ||
+        config.STRATEGY_FIXTURE_PATH)
+    )
+      issue(
+        'LIVE_PAPER_DECISIONS_ENABLED',
+        'Free live decisions require standalone strategy and paper services, with replay paths and forward mode disabled',
+      );
     if (
       config.JUPITER_UNSIGNED_BUILD_ENABLED &&
       (!config.JUPITER_SWAP_ENABLED || !config.JUPITER_TAKER_PUBLIC_KEY)

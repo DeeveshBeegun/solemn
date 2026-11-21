@@ -384,24 +384,28 @@ export async function readDataset(params: URLSearchParams) {
     }
     return {
       columnOptions,
-      rows: rows.slice(0, pageSize).map(({ cursorDate, cursorId, ...row }) => ({
-        ...row,
-        // Use ISO timestamps in the browser while retaining DB precision in the cursor.
-        ...Object.fromEntries(
-          Object.entries(row)
-            .filter(
-              ([key, value]) =>
-                value !== null &&
-                (key.endsWith('At') ||
-                  key === 'timestamp' ||
-                  key === 'validUntil'),
-            )
-            .map(([key, value]) => [
-              key,
-              new Date(String(value)).toISOString(),
-            ]),
-        ),
-      })),
+      rows: rows.slice(0, pageSize).map(({ cursorDate, cursorId, ...row }) => {
+        void cursorDate;
+        void cursorId;
+        return {
+          ...row,
+          // Use ISO timestamps in the browser while retaining DB precision in the cursor.
+          ...Object.fromEntries(
+            Object.entries(row)
+              .filter(
+                ([key, value]) =>
+                  value !== null &&
+                  (key.endsWith('At') ||
+                    key === 'timestamp' ||
+                    key === 'validUntil'),
+              )
+              .map(([key, value]) => [
+                key,
+                new Date(String(value)).toISOString(),
+              ]),
+          ),
+        };
+      }),
       next,
       timeline,
     };

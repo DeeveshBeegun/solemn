@@ -13,6 +13,7 @@ import {
   tokens,
 } from '@solemn/database';
 import type { Database } from '@solemn/database';
+import { queryEligibleTokens } from '../src/ui/eligibleTokens.js';
 import { loadConfig } from '../src/config/index.js';
 import {
   evaluateTokenRisk,
@@ -239,5 +240,113 @@ describe('risk history and durable worklist', () => {
       expect(current?.riskTrigger).toBe('TOKEN_MIGRATED');
       expect(current?.riskStatus).toBe('UNKNOWN');
       expect(current?.riskAttemptCount).toBe(0);
+    }));
+});
+
+describe('dashboard eligibility alerts', () => {
+  async function seed(tx: Database) {
+    const repository = createRiskRepository(tx);
+    await repository.request(MINT, id(9200), NOW);
+    const claimed = (await repository.claim(1, NOW, 1000, 3))[0];
+    if (!claimed) throw new Error('Missing alert assessment job');
+    const assessment = evaluateTokenRisk(
+      claimed,
+      goodJupiter(),
+      goodSecurity(),
+      policy,
+      NOW,
+    );
+    await repository.persist(assessment, null);
+    return assessment;
+  }
+  it('returns current policy-scoped eligible tokens with safe metadata only', async () =>
+    rolledBack(async (tx) => {
+      const assessment = await seed(tx);
+      const result = await queryEligibleTokens(tx, policyHash(policy), LATER);
+      expect(result.total).toBe(1);
+      expect(result.tokens[0]?.mint).toBe(MINT);
+      expect(result.tokens[0]?.assessmentId).toBe(assessment.id);
+      expect(result.tokens[0]?.liquidityUsd).toBe('50000');
+      expect(result.tokens[0]?.validUntil).toBe(assessment.validUntil);
+      expect(JSON.stringify(result)).not.toContain('rawResponse');
+      expect(JSON.stringify(result)).not.toContain('evidence');
+      expect(
+        (await queryEligibleTokens(tx, 'other-policy', LATER)).tokens,
+      ).toEqual([]);
+      expect(
+        (
+          await queryEligibleTokens(
+            tx,
+            policyHash(policy),
+            assessment.validUntil!,
+          )
+        ).tokens,
+      ).toEqual([]);
+      expect(
+        (
+          await queryEligibleTokens(
+            tx,
+            policyHash(policy),
+            '2025-12-31T23:59:59.000Z',
+          )
+        ).tokens,
+      ).toEqual([]);
+    }));
+  it('excludes fixture sources and synthetic triggers even when their risk is eligible', async () =>
+    rolledBack(async (tx) => {
+      await seed(tx);
+      for (const sourcePlatform of [
+        'fixture',
+        'PAPER_FIXTURE',
+        'SOLEMN_WEEK6_SYNTHETIC',
+        'FORWARD_REPLAY',
+      ]) {
+        await tx
+          .update(tokens)
+          .set({ sourcePlatform })
+          .where(eq(tokens.mintAddress, MINT));
+        expect(
+          (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+        ).toEqual([]);
+      }
+      await tx
+        .update(tokens)
+        .set({ sourcePlatform: 'MANUAL', riskTrigger: 'FIXTURE' })
+        .where(eq(tokens.mintAddress, MINT));
+      expect(
+        (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+      ).toEqual([]);
+    }));
+  it('ignores stale flags, mismatched requests and in-flight risk work', async () =>
+    rolledBack(async (tx) => {
+      const assessment = await seed(tx);
+      await tx
+        .update(tokens)
+        .set({ riskLeaseUntil: '2026-01-01T00:00:30.000Z' })
+        .where(eq(tokens.mintAddress, MINT));
+      expect(
+        (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+      ).toEqual([]);
+      await tx
+        .update(tokens)
+        .set({ riskLeaseUntil: null, riskRequestId: id(9201) })
+        .where(eq(tokens.mintAddress, MINT));
+      expect(
+        (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+      ).toEqual([]);
+      await tx
+        .update(tokens)
+        .set({ riskRequestId: assessment.requestId, riskStatus: 'REJECTED' })
+        .where(eq(tokens.mintAddress, MINT));
+      expect(
+        (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+      ).toEqual([]);
+      await tx
+        .update(tokens)
+        .set({ riskStatus: 'ELIGIBLE', riskValidUntil: NOW })
+        .where(eq(tokens.mintAddress, MINT));
+      expect(
+        (await queryEligibleTokens(tx, policyHash(policy), LATER)).tokens,
+      ).toEqual([]);
     }));
 });

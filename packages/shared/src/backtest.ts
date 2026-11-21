@@ -106,7 +106,10 @@ export const historicalEventSchema = z
     z.strictObject({
       ...envelope,
       kind: z.literal('EXECUTION'),
-      data: executionObservationSchema,
+      data: executionObservationSchema.refine(
+        (o) => o.dataMode === 'FIXTURE',
+        'Backtest observations must be fixtures',
+      ),
     }),
     z.strictObject({
       ...envelope,

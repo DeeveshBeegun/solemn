@@ -30,7 +30,7 @@ export function createWorker(
     readonly status: string;
   },
 ) {
-  // No fixtures are provided at startup: the worker cannot simulate unsolicited fills.
+  // Startup initializes account balances; services own explicit replay or live decision processing.
   const execution = new PaperExecutionAdapter(config.INITIAL_PAPER_BALANCE_USD);
   let startup: Promise<void> | undefined;
   let shutdown: Promise<void> | undefined;

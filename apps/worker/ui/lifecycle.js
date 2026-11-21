@@ -28,6 +28,10 @@ const modes = {
   LIVE_NOT_READY: 'Live strategy evidence',
 };
 function modeName(context) {
+  if (context.sourceKind === 'LIVE_PAPER_SPOT')
+    return 'Live paper simulation · Free data';
+  if (context.sourceKind === 'LIVE_PAPER')
+    return 'Live paper decisions · Free data';
   if (context.sourceKind === 'HISTORICAL') return 'Historical backtest';
   if (context.sourceKind === 'SYNTHETIC') return 'Synthetic backtest';
   return modes[context.dataMode] ?? context.dataMode;
@@ -274,6 +278,11 @@ function renderHeader(data) {
     scope +
       ' · ' +
       label(data.context.status) +
+      (data.context.sourceKind === 'LIVE_PAPER_SPOT'
+        ? ' · Simulated fills use later public trades with configured fees and adverse slippage. This is a paper spot model, not a venue quote.'
+        : data.context.sourceKind === 'LIVE_PAPER'
+          ? ' · Free cached market data. Entry decisions are recorded; live execution quotes are still required for fills.'
+          : '') +
       (data.contextsTruncated
         ? ' · Showing the latest 200 contexts; account links can open older contexts.'
         : ''),

@@ -52,6 +52,10 @@ function error(message) {
   get('trading-error').hidden = !message;
 }
 function modeName(ctx) {
+  if (ctx.sourceKind === 'LIVE_PAPER_SPOT')
+    return 'Live paper simulation · Free data';
+  if (ctx.sourceKind === 'LIVE_PAPER')
+    return 'Live paper decisions · Free data';
   if (ctx.sourceKind === 'HISTORICAL') return 'Historical backtest';
   if (ctx.sourceKind === 'SYNTHETIC') return 'Synthetic backtest';
   return (
@@ -200,7 +204,12 @@ function renderHeader(data) {
       ' · ' +
       data.context.key +
       (data.contextsTruncated ? ' · Latest 200 contexts shown.' : '') +
-      ' · Realized P&L and positions cover the full context. Other metrics cover the selected time range.',
+      ' · Realized P&L and positions cover the full context. Other metrics cover the selected time range.' +
+      (data.context.sourceKind === 'LIVE_PAPER_SPOT'
+        ? ' Simulated fills use later public trades with configured fees and adverse slippage. They are not venue quotes or real trades.'
+        : data.context.sourceKind === 'LIVE_PAPER'
+          ? ' This free live account records entry decisions; live execution quotes are required for fills.'
+          : ''),
   );
   get('view-lifecycle').href =
     '/lifecycle?' + new URLSearchParams({ mint, context });

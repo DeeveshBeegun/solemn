@@ -129,7 +129,7 @@ export const executionObservationSchema = z
     usdSource: z.string().min(1).max(128).nullable(),
     source: z.string().min(1).max(128),
     sourceTradeId: idSchema.nullable(),
-    dataMode: z.literal('FIXTURE'),
+    dataMode: z.enum(['FIXTURE', 'LIVE_PAPER']),
     pool: poolSnapshotSchema.optional(),
     nativeUsd: nativeUsdSchema.nullable().optional(),
     simulationOutcome: z
@@ -139,6 +139,18 @@ export const executionObservationSchema = z
   .refine(
     (value) => value.observedAt <= value.receivedAt,
     'Observation cannot arrive before its timestamp',
+  )
+  .refine(
+    (value) =>
+      value.dataMode === 'FIXTURE' ||
+      (value.source === 'GECKOTERMINAL_PUBLIC' &&
+        value.usdSource === 'GECKOTERMINAL_TRADE_USD' &&
+        value.sourceTradeId !== null &&
+        !value.pool &&
+        !value.nativeUsd &&
+        value.simulationOutcome === 'FULL_FILL' &&
+        value.estimatedPriceImpactPercent === null),
+    'Live spot simulation requires public trade provenance and cannot claim reserve-based execution',
   );
 export type ExecutionObservation = z.infer<typeof executionObservationSchema>;
 export const paperPositionSchema = z.strictObject({
@@ -196,21 +208,34 @@ export const paperPortfolioStateSchema = z.strictObject({
   executionUncertain: z.boolean().optional(),
 });
 export type PaperPortfolioState = z.infer<typeof paperPortfolioStateSchema>;
-export const paperAccountDefinitionSchema = z.strictObject({
-  id: idSchema,
-  name: z.string().min(1).max(100),
-  mode: z.literal('PAPER'),
-  currency: z.literal('USD'),
-  dataMode: z.enum(['FIXTURE', 'FORWARD_REPLAY', 'FORWARD_LIVE']),
-  forwardExecution: executionConfigSchema.optional(),
-  strategyRunId: idSchema,
-  replayHash: z.string().regex(/^[a-f0-9]{64}$/),
-  createdAt: timestampSchema,
-  configHash: z.string().regex(/^[a-f0-9]{64}$/),
-  policy: paperPolicySchema,
-  strategyPolicy: strategyPolicySchema,
-  riskPolicy: riskPolicySchema,
-});
+export const paperAccountDefinitionSchema = z
+  .strictObject({
+    id: idSchema,
+    name: z.string().min(1).max(100),
+    mode: z.literal('PAPER'),
+    currency: z.literal('USD'),
+    dataMode: z.enum(['FIXTURE', 'FORWARD_REPLAY', 'FORWARD_LIVE']),
+    forwardExecution: executionConfigSchema.optional(),
+    freeExecution: z
+      .strictObject({
+        model: z.literal('FREE_PUBLIC_SPOT_V1'),
+        source: z.literal('GECKOTERMINAL_PUBLIC'),
+      })
+      .optional(),
+    strategyRunId: idSchema,
+    replayHash: z.string().regex(/^[a-f0-9]{64}$/),
+    createdAt: timestampSchema,
+    configHash: z.string().regex(/^[a-f0-9]{64}$/),
+    policy: paperPolicySchema,
+    strategyPolicy: strategyPolicySchema,
+    riskPolicy: riskPolicySchema,
+  })
+  .refine(
+    (value) =>
+      !value.freeExecution ||
+      (value.dataMode === 'FORWARD_LIVE' && !value.forwardExecution),
+    'Free spot execution belongs only to its standalone live paper account',
+  );
 export type PaperAccountDefinition = z.infer<
   typeof paperAccountDefinitionSchema
 >;
@@ -328,6 +353,10 @@ export const paperReplaySchema = z
     marketDataset: marketDatasetSchema,
     observations: z.array(executionObservationSchema).min(1).max(1000),
   })
+  .refine(
+    (value) => value.observations.every((o) => o.dataMode === 'FIXTURE'),
+    'Replay observations must be fixtures',
+  )
   .refine(
     (value) =>
       new Set(value.observations.map((item) => item.id)).size ===

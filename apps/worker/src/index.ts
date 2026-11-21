@@ -9,6 +9,7 @@ import { createLogger, safeError } from './services/logger.js';
 import { createWorker } from './services/worker.js';
 import { createScannerService } from './scanner/scannerService.js';
 import { createRiskAnalysisService } from './analysis/riskAnalysisService.js';
+import { createFreePaperDecisionService } from './portfolio/freePaperDecisions.js';
 import { createPaperTradingService } from './portfolio/paperTradingService.js';
 import { createStrategyService } from './strategy/strategyService.js';
 import { runForwardCommand } from './forward/forwardTradingService.js';
@@ -59,11 +60,37 @@ async function main(): Promise<void> {
           ),
       )
     : undefined;
+  const freePaper = config.LIVE_PAPER_DECISIONS_ENABLED
+    ? createFreePaperDecisionService(config, database, logger)
+    : undefined;
   const strategy = config.STRATEGY_ENABLED
-    ? createStrategyService(config, database.db, logger)
+    ? (freePaper ?? createStrategyService(config, database.db, logger))
     : undefined;
   const paper = config.PAPER_TRADING_ENABLED
-    ? createPaperTradingService(config, database.db, logger)
+    ? freePaper
+      ? {
+          get status() {
+            return freePaper.status;
+          },
+          async start() {
+            if (config.LIVE_PAPER_EXECUTION_ENABLED)
+              logger.info(
+                {
+                  portfolioId: freePaper.portfolioId,
+                  status: 'PAPER_SIMULATION',
+                },
+                'Free live paper executor started',
+              );
+            logger.info(
+              { portfolioId: freePaper.portfolioId, status: freePaper.status },
+              'Paper entry service uses the free live decision engine',
+            );
+          },
+          async stop() {
+            /* Strategy lifecycle owns and drains the shared decision engine. */
+          },
+        }
+      : createPaperTradingService(config, database.db, logger)
     : undefined;
   const worker = createWorker(
     config,

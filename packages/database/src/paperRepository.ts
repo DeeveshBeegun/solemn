@@ -21,7 +21,11 @@ import type { Database } from './client.js';
 import { forwardAccounts } from './forwardSchema.js';
 import { forwardOwnerPid } from './forwardOwnership.js';
 import { orders, positions, tokens, trades } from './schema.js';
-import { strategyDecisions, strategyRuns } from './strategySchema.js';
+import {
+  marketTradeObservations,
+  strategyDecisions,
+  strategyRuns,
+} from './strategySchema.js';
 import { paperPortfolios, portfolioBalanceEvents } from './paperSchema.js';
 export interface PaperCommit extends PaperTransition {
   duplicate: boolean;
@@ -238,6 +242,9 @@ export function createPaperRepository(db: Database): PaperRepository {
         ...(definition.forwardExecution
           ? { forwardExecution: definition.forwardExecution }
           : {}),
+        ...(definition.freeExecution
+          ? { freeExecution: definition.freeExecution }
+          : {}),
       });
       if (definition.configHash !== expectedHash)
         throw new Error('Paper portfolio configuration hash mismatch');
@@ -261,10 +268,11 @@ export function createPaperRepository(db: Database): PaperRepository {
             .where(eq(strategyRuns.id, definition.strategyRunId))
         )[0];
         if (
-          run?.mode !==
-            (definition.dataMode === 'FORWARD_LIVE'
-              ? 'LIVE_NOT_READY'
-              : 'FIXTURE') ||
+          !run ||
+          (definition.freeExecution && run.mode !== 'LIVE_PAPER') ||
+          !(definition.dataMode === 'FORWARD_LIVE'
+            ? ['LIVE_NOT_READY', 'LIVE_PAPER'].includes(run.mode)
+            : run.mode === 'FIXTURE') ||
           run.configHash !== stableHash(definition.strategyPolicy) ||
           run.riskPolicyHash !== stableHash(definition.riskPolicy)
         )
@@ -373,7 +381,14 @@ export function createPaperRepository(db: Database): PaperRepository {
         if (!row) throw new Error('Unknown paper portfolio');
         const definition = paperAccountDefinitionSchema.parse(row.definition),
           current = paperPortfolioStateSchema.parse(row.state);
-        if (definition.dataMode !== 'FIXTURE') {
+        const freeSpot =
+          definition.dataMode === 'FORWARD_LIVE' && !!definition.freeExecution;
+        if (freeSpot) {
+          if (forward || !(await forwardOwnerPid(tx, portfolioId)))
+            throw new Error(
+              'Free paper mutation requires its PostgreSQL ownership session',
+            );
+        } else if (definition.dataMode !== 'FIXTURE') {
           if (!forward?.ownerPid)
             throw new Error('Forward mutation requires an initialized owner');
           const owner = await forwardOwnerPid(
@@ -398,9 +413,118 @@ export function createPaperRepository(db: Database): PaperRepository {
             throw new Error('Forward reset requires an operational halt');
         }
         if (command.type === 'ENTRY' || command.type === 'MARK') {
-          if (definition.dataMode === 'FORWARD_LIVE')
+          if (definition.dataMode === 'FORWARD_LIVE' && !freeSpot)
             throw new Error('Live execution evidence is NOT_READY');
           const execution = command.execution;
+          if (freeSpot) {
+            if (execution)
+              throw new Error(
+                'Free spot execution cannot claim a reserve simulation',
+              );
+            if (command.type === 'ENTRY' && command.observation) {
+              const token = (
+                await tx
+                  .select()
+                  .from(tokens)
+                  .where(eq(tokens.mintAddress, command.candidate.mint))
+                  .for('share')
+              )[0];
+              if (
+                !token ||
+                token.riskRequestId !== command.risk?.currentRequestId ||
+                token.latestRiskAssessmentId !== command.risk?.assessment?.id ||
+                token.riskStatus !== command.risk?.currentStatus ||
+                (token.riskLeaseUntil &&
+                  Date.parse(token.riskLeaseUntil) > Date.parse(command.at))
+              )
+                throw new Error(
+                  'Free paper entry risk changed; fresh evaluation required',
+                );
+            }
+            const observation = command.observation;
+            if (observation) {
+              if (
+                observation.dataMode !== 'LIVE_PAPER' ||
+                !observation.sourceTradeId
+              )
+                throw new Error(
+                  'Free paper execution requires authentic persisted public trade evidence',
+                );
+              const trade = (
+                await tx
+                  .select()
+                  .from(marketTradeObservations)
+                  .where(
+                    and(
+                      eq(
+                        marketTradeObservations.runId,
+                        definition.strategyRunId,
+                      ),
+                      eq(marketTradeObservations.id, observation.sourceTradeId),
+                    ),
+                  )
+              )[0]?.payload;
+              if (
+                observation.dataMode !== 'LIVE_PAPER' ||
+                !trade ||
+                trade.source !== 'GECKOTERMINAL_PUBLIC' ||
+                trade.rawPayload.isAnomalous !== false ||
+                trade.usdSource !== observation.usdSource ||
+                !trade.usdReliable ||
+                trade.priceUsd !== observation.priceUsd ||
+                trade.mint !== observation.mint ||
+                trade.poolAddress !== observation.poolAddress ||
+                trade.timestamp !== observation.observedAt ||
+                Date.parse(trade.receivedAt) >
+                  Date.parse(observation.receivedAt)
+              )
+                throw new Error(
+                  'Free paper execution requires authentic persisted public trade evidence',
+                );
+              if (
+                command.type === 'ENTRY' &&
+                Date.parse(observation.observedAt) <=
+                  Date.parse(command.candidate.timestamp)
+              )
+                throw new Error(
+                  'Free paper entry requires a later trade observation',
+                );
+              if (command.type === 'MARK' && !command.deferExecution) {
+                const position = current.positions.find(
+                  (p) =>
+                    p.status !== 'CLOSED' &&
+                    p.mint === observation.mint &&
+                    p.poolAddress === observation.poolAddress,
+                );
+                const trigger = position?.pendingExitReason
+                  ? (
+                      await tx
+                        .select({ at: portfolioBalanceEvents.timestamp })
+                        .from(portfolioBalanceEvents)
+                        .where(
+                          and(
+                            eq(portfolioBalanceEvents.portfolioId, portfolioId),
+                            sql`${portfolioBalanceEvents.result}->>'positionId'=${position.id} AND ${portfolioBalanceEvents.result}->>'outcome'='EXIT_SCHEDULED'`,
+                          ),
+                        )
+                        .orderBy(sql`${portfolioBalanceEvents.sequence} DESC`)
+                        .limit(1)
+                    )[0]?.at
+                  : null;
+                if (
+                  !trigger ||
+                  Date.parse(observation.observedAt) <= Date.parse(trigger)
+                )
+                  throw new Error(
+                    'Free paper exit requires a persisted trigger and later trade observation',
+                  );
+              }
+            }
+          } else if (command.observation?.dataMode === 'LIVE_PAPER') {
+            throw new Error(
+              'Live observations cannot execute in fixture or replay accounts',
+            );
+          }
           if (definition.dataMode === 'FORWARD_REPLAY') {
             if (
               !execution ||
@@ -481,13 +605,17 @@ export function createPaperRepository(db: Database): PaperRepository {
           )[0];
           if (
             !decision ||
-            decision.mode !== 'FIXTURE' ||
+            decision.mode !== (freeSpot ? 'LIVE_PAPER' : 'FIXTURE') ||
+            command.candidate.dataMode !==
+              (freeSpot ? 'LIVE_PAPER' : 'FIXTURE') ||
             stableHash(
               strategyDecisionSchema.parse(decision.payload).candidate,
             ) !== stableHash(command.candidate)
           )
             throw new Error(
-              'Entry requires an authentic persisted fixture candidate',
+              freeSpot
+                ? 'Entry requires an authentic persisted live candidate'
+                : 'Entry requires an authentic persisted fixture candidate',
             );
         }
         const transition = reduce(current, definition);

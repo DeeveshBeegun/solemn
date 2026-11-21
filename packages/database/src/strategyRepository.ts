@@ -31,7 +31,7 @@ import {
 
 export interface StrategyRun {
   id: string;
-  mode: 'FIXTURE' | 'LIVE_NOT_READY';
+  mode: 'FIXTURE' | 'LIVE_NOT_READY' | 'LIVE_PAPER';
   strategyId: string;
   strategyVersion: string;
   configHash: string;
@@ -123,8 +123,16 @@ export function createStrategyRepository(db: Database): StrategyRepository {
       const decision = strategyDecisionSchema.parse(input);
       if (decision.runId !== run.id)
         throw new Error('Strategy decision run mismatch');
-      if (decision.outcome === 'BUY_CANDIDATE' && run.mode !== 'FIXTURE')
+      if (decision.outcome === 'BUY_CANDIDATE' && run.mode === 'LIVE_NOT_READY')
         throw new Error('Live strategy generation is NOT_READY');
+      if (
+        decision.outcome === 'BUY_CANDIDATE' &&
+        ((run.mode !== 'FIXTURE' && run.mode !== 'LIVE_PAPER') ||
+          decision.candidate?.dataMode !== run.mode)
+      )
+        throw new Error(
+          'Candidate source does not match a supported strategy run',
+        );
       return db.transaction(async (tx) => {
         if (candles.length)
           await tx

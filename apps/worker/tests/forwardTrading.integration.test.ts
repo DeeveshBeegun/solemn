@@ -1,3 +1,4 @@
+import { queryPaperEntryAlerts } from '../src/ui/paperEntryAlerts.js';
 import { createStressFixture } from '../src/backtesting/stressScenarios.js';
 import { runLiveForward } from '../src/forward/liveProvider.js';
 import type { TransportFactory } from '../src/scanner/pumpPortalClient.js';
@@ -806,4 +807,34 @@ it(
       }),
     ),
   30000,
+);
+
+it(
+  'exposes forward paper entry decisions once per candidate with account context',
+  async () =>
+    rollback(async (tx) => {
+      const result = await runForwardReplay(
+        tx,
+        config,
+        createReplayProvider(config),
+        logger,
+      );
+      const data = await queryPaperEntryAlerts(tx, new Date().toISOString());
+      const entries = data.entries.filter(
+        (entry) => entry.portfolioId === result.portfolioId,
+      );
+      expect(entries.length).toBeGreaterThan(0);
+      expect(
+        entries.every((entry) => entry.dataMode === 'FORWARD_REPLAY'),
+      ).toBe(true);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(
+        entries.length,
+      );
+      expect(
+        entries
+          .filter((entry) => entry.status === 'FILLED')
+          .every((entry) => entry.fillPriceUsd !== null),
+      ).toBe(true);
+    }),
+  60000,
 );

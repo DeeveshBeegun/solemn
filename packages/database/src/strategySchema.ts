@@ -26,6 +26,7 @@ const time = (name: string) =>
 export const strategyMode = pgEnum('strategy_mode', [
   'FIXTURE',
   'LIVE_NOT_READY',
+  'LIVE_PAPER',
 ]);
 export const strategyOutcome = pgEnum('strategy_outcome', [
   'BUY_CANDIDATE',
@@ -176,7 +177,7 @@ export const strategyDecisions = pgTable(
     index('strategy_decision_outcome_idx').on(t.outcome, t.timestamp),
     check(
       'strategy_fixture_candidates_only',
-      sql`${t.outcome} != 'BUY_CANDIDATE' OR (${t.mode} = 'FIXTURE' AND ${t.opportunityKey} IS NOT NULL AND ${t.signalId} IS NOT NULL AND ${t.payload}->'candidate' IS NOT NULL AND ${t.payload}->'candidate' != 'null'::jsonb)`,
+      sql`${t.outcome} != 'BUY_CANDIDATE' OR (((${t.mode}::text = 'FIXTURE' AND coalesce(${t.payload}->'candidate'->>'dataMode','')='FIXTURE') OR (${t.mode}::text='LIVE_PAPER' AND coalesce(${t.payload}->'candidate'->>'dataMode','')='LIVE_PAPER')) AND ${t.opportunityKey} IS NOT NULL AND ${t.signalId} IS NOT NULL AND ${t.payload}->'candidate' IS NOT NULL AND ${t.payload}->'candidate' != 'null'::jsonb)`,
     ),
   ],
 );

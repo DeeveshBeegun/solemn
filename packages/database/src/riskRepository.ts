@@ -212,6 +212,22 @@ export function createRiskRepository(db: Database): RiskRepository {
   };
 }
 
+/** Shared current-policy, request, expiry and lease boundary for trading and alerts. */
+export function eligibleRiskConditions(now: string, policyHash: string) {
+  timestampSchema.parse(now);
+  return and(
+    eq(tokens.riskStatus, 'ELIGIBLE'),
+    eq(tokenRiskAssessments.status, 'ELIGIBLE'),
+    eq(tokenRiskAssessments.policyHash, policyHash),
+    eq(tokenRiskAssessments.requestId, tokens.riskRequestId),
+    eq(tokenRiskAssessments.tokenMint, tokens.mintAddress),
+    gt(tokens.riskValidUntil, now),
+    gt(tokenRiskAssessments.validUntil, now),
+    lte(tokenRiskAssessments.assessedAt, now),
+    isNull(tokens.riskLeaseUntil),
+  );
+}
+
 /** Mandatory Week 4 boundary: a stored ELIGIBLE flag alone is insufficient. */
 export async function listEligibleRiskCandidates(
   db: Database,
@@ -234,18 +250,6 @@ export async function listEligibleRiskCandidates(
       tokenRiskAssessments,
       eq(tokens.latestRiskAssessmentId, tokenRiskAssessments.id),
     )
-    .where(
-      and(
-        eq(tokens.riskStatus, 'ELIGIBLE'),
-        eq(tokenRiskAssessments.status, 'ELIGIBLE'),
-        eq(tokenRiskAssessments.policyHash, policyHash),
-        eq(tokenRiskAssessments.requestId, tokens.riskRequestId),
-        eq(tokenRiskAssessments.tokenMint, tokens.mintAddress),
-        gt(tokens.riskValidUntil, now),
-        gt(tokenRiskAssessments.validUntil, now),
-        lte(tokenRiskAssessments.assessedAt, now),
-        isNull(tokens.riskLeaseUntil),
-      ),
-    )
+    .where(eligibleRiskConditions(now, policyHash))
     .limit(limit);
 }

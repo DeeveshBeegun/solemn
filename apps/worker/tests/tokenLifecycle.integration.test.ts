@@ -29,6 +29,7 @@ import {
   findLifecycleTokens,
   TokenNotFound,
 } from '../src/ui/tokenLifecycle.js';
+import { queryPaperEntryAlerts } from '../src/ui/paperEntryAlerts.js';
 import { readTokenTrading } from '../src/ui/tokenTrading.js';
 import { DataQueryError } from '../src/ui/dataExplorer.js';
 import { event, token, snapshot, signal } from '../../../tests/fixtures.js';
@@ -580,4 +581,127 @@ it('separates market pools and exposes only reliable, projected observation data
   expect(unknown.candles[0]?.volumeUsd).toBeNull();
   expect(JSON.stringify(unknown)).not.toContain('DO_NOT_EXPOSE');
   expect(unknown.positions.realizedPnlUsd).toBeNull();
+});
+
+it('lists account-owned paper entry decisions with source clocks and confirmed fill outcomes', async () => {
+  const data = await queryPaperEntryAlerts(
+    database.db,
+    new Date().toISOString(),
+  );
+  const expected = (
+    await database.pool.query(
+      `SELECT d.id FROM strategy_decisions d JOIN paper_portfolios p ON p.strategy_run_id=d.run_id WHERE d.outcome='BUY_CANDIDATE'`,
+    )
+  ).rows.map((row) => row.id);
+  expect(data.entries.length).toBeGreaterThan(0);
+  expect(data.entries.map((entry) => entry.decisionId).sort()).toEqual(
+    expected.sort(),
+  );
+  expect(new Set(data.entries.map((entry) => entry.id)).size).toBe(
+    data.entries.length,
+  );
+  expect(
+    data.entries.every(
+      (entry) =>
+        entry.dataMode === 'FIXTURE' && entry.sourceKind === 'SYNTHETIC',
+    ),
+  ).toBe(true);
+  expect(
+    data.entries.every((entry) => entry.decidedAt.startsWith('2026-01-01')),
+  ).toBe(true);
+  expect(
+    data.entries.every(
+      (entry) => Date.parse(entry.recordedAt) > Date.parse(entry.decidedAt),
+    ),
+  ).toBe(true);
+  const filled = data.entries.filter((entry) => entry.status === 'FILLED');
+  expect(filled.length).toBeGreaterThan(0);
+  expect(
+    filled.every(
+      (entry) => entry.fillPriceUsd !== null && entry.quantity !== null,
+    ),
+  ).toBe(true);
+  expect(data.entries.some((entry) => entry.portfolioId === portfolioA)).toBe(
+    true,
+  );
+  expect(data.entries.some((entry) => entry.portfolioId === portfolioB)).toBe(
+    true,
+  );
+  expect(JSON.stringify(data)).not.toContain('rawPayload');
+});
+
+it('uses recording time to exclude old history and future records', async () => {
+  expect(
+    (await queryPaperEntryAlerts(database.db, '2020-01-01T00:00:00.000Z'))
+      .entries,
+  ).toEqual([]);
+  const future = new Date(Date.now() + 25 * 3600000).toISOString();
+  expect((await queryPaperEntryAlerts(database.db, future)).entries).toEqual(
+    [],
+  );
+});
+
+it('distinguishes unqueued, queued, failed and unconfirmed entries without inventing fills', async () => {
+  const original = (
+    await database.pool.query(
+      `SELECT d.* FROM strategy_decisions d WHERE d.run_id=$1 AND d.outcome='BUY_CANDIDATE' LIMIT 1`,
+      [strategyA],
+    )
+  ).rows[0];
+  const id = randomUUID(),
+    signalId = randomUUID();
+  const payload = {
+    ...original.payload,
+    id,
+    candidate: { ...original.payload.candidate, id: signalId },
+  };
+  await database.pool.query(
+    `INSERT INTO strategy_decisions(id,run_id,mode,token_mint,pool_address,timestamp,candle_id,outcome,opportunity_key,signal_id,payload)
+    VALUES($1,$2,$3,$4,$5,$6,$7,'BUY_CANDIDATE',$8::text,$8::uuid,$9)`,
+    [
+      id,
+      strategyA,
+      original.mode,
+      original.token_mint,
+      original.pool_address,
+      original.timestamp,
+      original.candle_id,
+      signalId,
+      payload,
+    ],
+  );
+  const find = async () =>
+    (
+      await queryPaperEntryAlerts(database.db, new Date().toISOString())
+    ).entries.find((entry) => entry.decisionId === id);
+  expect((await find())?.status).toBe('CANDIDATE_ONLY');
+  const template = (
+    await database.pool.query(
+      `SELECT i.* FROM backtest_execution_intents i JOIN backtest_runs r ON r.id=i.run_id WHERE r.portfolio_id=$1 AND i.payload->>'kind'='ENTRY' LIMIT 1`,
+      [portfolioA],
+    )
+  ).rows[0];
+  const intentId = randomUUID();
+  await database.pool.query(
+    `INSERT INTO backtest_execution_intents(id,run_id,status,due_at,payload) VALUES($1,$2,'PENDING',$3,$4)`,
+    [
+      intentId,
+      template.run_id,
+      template.due_at,
+      { ...template.payload, id: intentId, signalId, status: 'PENDING' },
+    ],
+  );
+  expect((await find())?.status).toBe('QUEUED');
+  await database.pool.query(
+    `UPDATE backtest_execution_intents SET status='FAILED' WHERE id=$1`,
+    [intentId],
+  );
+  expect((await find())?.status).toBe('FAILED');
+  await database.pool.query(
+    `UPDATE backtest_execution_intents SET status='FILLED' WHERE id=$1`,
+    [intentId],
+  );
+  const unconfirmed = await find();
+  expect(unconfirmed?.status).toBe('EXECUTION_UNCERTAIN');
+  expect(unconfirmed?.fillPriceUsd).toBeNull();
 });

@@ -113,6 +113,13 @@
       "when": 1794614400000,
       "tag": "0015_database_storage_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795219200000,
+      "tag": "0016_live_paper_decisions",
+      "breakpoints": true
     }
   ]
 }

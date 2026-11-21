@@ -181,7 +181,7 @@ export async function withTokenContext<T>(
         SELECT 'portfolio:'||p.id::text AS key, p.name, p.data_mode AS "dataMode",
           coalesce(f.status,b.status,p.status) AS status, p.id::text AS "portfolioId",
           p.strategy_run_id::text AS "runId", b.dataset_id::text AS "datasetId",
-          b.plan->>'sourceKind' AS "sourceKind",
+          CASE WHEN p.definition->'freeExecution'->>'model'='FREE_PUBLIC_SPOT_V1' THEN 'LIVE_PAPER_SPOT' WHEN r.mode::text='LIVE_PAPER' THEN 'LIVE_PAPER' ELSE b.plan->>'sourceKind' END AS "sourceKind",
           greatest(r.created_at,coalesce(b.created_at,r.created_at),coalesce(f.started_at,r.created_at)) AS updated
         FROM paper_portfolios p
         JOIN strategy_runs r ON r.id=p.strategy_run_id

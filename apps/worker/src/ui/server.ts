@@ -26,7 +26,10 @@ import {
   TokenNotFound,
 } from './tokenLifecycle.js';
 
+import { readPaperEntryAlerts } from './paperEntryAlerts.js';
+import { readEligibleTokens } from './eligibleTokens.js';
 import { readTokenTrading } from './tokenTrading.js';
+import { readLivePaperAccount } from './livePaperAccount.js';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 dotenv({ path: resolve(root, '.env'), quiet: true });
@@ -41,6 +44,12 @@ const token = randomUUID();
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/dashboard.css', ['dashboard.css', 'text/css; charset=utf-8']],
+  ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
+  ['/notifications.css', ['notifications.css', 'text/css; charset=utf-8']],
+  [
+    '/notification-state.js',
+    ['../dist/ui/notificationState.js', 'text/javascript; charset=utf-8'],
+  ],
   ['/dashboard.js', ['dashboard.js', 'text/javascript; charset=utf-8']],
   ['/data', ['data.html', 'text/html; charset=utf-8']],
   ['/data.css', ['data.css', 'text/css; charset=utf-8']],
@@ -106,6 +115,8 @@ function forwardEnv(forward: Forward): NodeJS.ProcessEnv {
     ...process.env,
     ENABLE_METERED_MARKET_DATA: 'false',
     FORWARD_PAPER_ENABLED: 'true',
+    LIVE_PAPER_DECISIONS_ENABLED: 'false',
+    LIVE_PAPER_EXECUTION_ENABLED: 'false',
     FORWARD_MARKET_DATA_MODE:
       forward.mode === 'replay' ? 'REPLAY' : 'LIVE_READ_ONLY',
     FORWARD_ACCOUNT: forward.account,
@@ -554,6 +565,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (url.pathname === '/api/data/catalog')
       return json(res, 200, dataCatalog);
     const readers: Record<string, () => Promise<unknown>> = {
+      '/api/live-paper': () =>
+        readLivePaperAccount(
+          job?.mode === 'worker' && job.status === 'running',
+        ),
+      '/api/notifications/entries': () => readPaperEntryAlerts(),
+      '/api/notifications/eligible': () => readEligibleTokens(),
       '/api/data/records': () => readDataset(url.searchParams),
       '/api/data/equity': () => readEquity(url.searchParams.get('run') ?? ''),
       '/api/trading/token': () => readTokenTrading(url.searchParams),

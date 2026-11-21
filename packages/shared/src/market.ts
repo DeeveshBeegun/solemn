@@ -219,7 +219,7 @@ export type MarketCorrection = z.infer<typeof marketCorrectionSchema>;
 
 export const buyCandidateSchema = z.strictObject({
   id: idSchema,
-  dataMode: z.literal('FIXTURE'),
+  dataMode: z.enum(['FIXTURE', 'LIVE_PAPER']),
   mint: mintAddressSchema,
   poolAddress: mintAddressSchema,
   strategyId: z.literal('SOLEMN_LAUNCH_MOMENTUM_V1'),

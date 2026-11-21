@@ -61,6 +61,7 @@ export interface SignalEvaluation {
   lastMarketUpdateAt: string | null;
   corrections: readonly MarketCorrection[];
   sourceRefs: string[];
+  dataMode?: 'FIXTURE' | 'LIVE_PAPER';
 }
 
 export function evaluateSignal(
@@ -277,7 +278,7 @@ export function evaluateSignal(
   state.lastSignalAt = input.asOf;
   const candidate = {
     id: stableId(['buy-candidate', input.runId, opportunityKey]),
-    dataMode: 'FIXTURE' as const,
+    dataMode: input.dataMode ?? 'FIXTURE',
     mint: input.mint,
     poolAddress: input.poolAddress,
     strategyId: policy.strategyId,
@@ -292,7 +293,10 @@ export function evaluateSignal(
     riskAssessmentId: assessment.id,
     opportunityKey,
     explanation:
-      'Completed-candle breakout after a prior spike and separate pullback; required activity and risk checks passed. Fixture research signal only.',
+      'Completed-candle breakout after a prior spike and separate pullback; required activity and risk checks passed. ' +
+      (input.dataMode === 'LIVE_PAPER'
+        ? 'Live market paper-entry decision.'
+        : 'Fixture research signal only.'),
     reasons: ['MOMENTUM_BREAKOUT_CONFIRMED'],
     sourceRefs: input.sourceRefs,
   };
